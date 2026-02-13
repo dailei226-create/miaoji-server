@@ -17,6 +17,7 @@ const common_1 = require("@nestjs/common");
 const jwt_guard_1 = require("../auth/jwt.guard");
 const orders_service_1 = require("./orders.service");
 const dto_1 = require("./dto");
+const isDev = process.env.NODE_ENV !== 'production';
 let OrdersController = class OrdersController {
     constructor(orders) {
         this.orders = orders;
@@ -26,10 +27,16 @@ let OrdersController = class OrdersController {
         return this.orders.create(userId, dto);
     }
     async mockPay(req, dto) {
+        if (!isDev) {
+            throw new common_1.ForbiddenException('mock-pay is only available in development environment');
+        }
         const userId = req.user?.sub;
         return this.orders.mockPay(userId, dto.orderId);
     }
     async mockPayById(req, id) {
+        if (!isDev) {
+            throw new common_1.ForbiddenException('mock-pay is only available in development environment');
+        }
         const userId = req.user?.sub;
         return this.orders.mockPay(userId, id);
     }

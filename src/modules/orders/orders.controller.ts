@@ -1,8 +1,11 @@
-import { Body, Controller, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, Req, UseGuards, ForbiddenException } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt.guard';
 import { OrdersService } from './orders.service';
 import { Request } from 'express';
 import { CreateOrderDto, MockPayDto } from './dto';
+
+// 环境检查：仅允许开发环境使用 mock 接口
+const isDev = process.env.NODE_ENV !== 'production';
 
 type AuthRequest = Request & { user?: { sub?: string } };
 
@@ -19,12 +22,20 @@ export class OrdersController {
 
   @Post('mock-pay')
   async mockPay(@Req() req: AuthRequest, @Body() dto: MockPayDto) {
+    // 非开发环境禁止调用 mock-pay
+    if (!isDev) {
+      throw new ForbiddenException('mock-pay is only available in development environment');
+    }
     const userId = req.user?.sub as string;
     return this.orders.mockPay(userId, dto.orderId);
   }
 
   @Post(':id/mock-pay')
   async mockPayById(@Req() req: AuthRequest, @Param('id') id: string) {
+    // 非开发环境禁止调用 mock-pay
+    if (!isDev) {
+      throw new ForbiddenException('mock-pay is only available in development environment');
+    }
     const userId = req.user?.sub as string;
     return this.orders.mockPay(userId, id);
   }

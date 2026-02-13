@@ -1,9 +1,12 @@
-import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Req, UseGuards, ForbiddenException } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { MockLoginDto } from './dto';
 import { Request } from 'express';
 import { JwtAuthGuard } from './jwt.guard';
 import { Role } from './roles.decorator';
+
+// 环境检查：仅允许开发环境使用 mock 接口
+const isDev = process.env.NODE_ENV !== 'production';
 
 type AuthRequestUser = {
   sub?: string;
@@ -24,6 +27,10 @@ export class AuthController {
 
   @Post('mock-login')
   async mockLogin(@Body() dto: MockLoginDto) {
+    // 非开发环境禁止调用 mock-login
+    if (!isDev) {
+      throw new ForbiddenException('mock-login is only available in development environment');
+    }
     return this.auth.mockLogin({ openId: dto.openId, nickname: dto.nickname, role: dto.role });
   }
 

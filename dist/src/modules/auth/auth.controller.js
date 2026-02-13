@@ -17,6 +17,7 @@ const common_1 = require("@nestjs/common");
 const auth_service_1 = require("./auth.service");
 const dto_1 = require("./dto");
 const jwt_guard_1 = require("./jwt.guard");
+const isDev = process.env.NODE_ENV !== 'production';
 const isRole = (value) => {
     return value === 'buyer' || value === 'creator' || value === 'admin';
 };
@@ -25,6 +26,9 @@ let AuthController = class AuthController {
         this.auth = auth;
     }
     async mockLogin(dto) {
+        if (!isDev) {
+            throw new common_1.ForbiddenException('mock-login is only available in development environment');
+        }
         return this.auth.mockLogin({ openId: dto.openId, nickname: dto.nickname, role: dto.role });
     }
     async me(req) {
