@@ -1,0 +1,388 @@
+// FREEZE(activity): ActivityJoin model locked. No schema changes without [BUGFIX] tag.
+// FREEZE(payment): Order/OrderItem models locked. No changes without explicit approval.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrderStatus {
+  created
+  paid
+  paid_mock    // 模拟支付
+  shipped
+  received     // 已确认收货
+  completed
+  canceled
+  refund_requested
+  refund_approved
+  refund_rejected
+  refunded
+}
+
+enum WorkStatus {
+  draft
+  reviewing
+  online
+  offline
+  sold_out
+}
+
+model User {
+  id        String   @id @default(cuid())
+  openId    String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  nickname  String?
+  bio       String?  @db.Text
+
+  // orders
+  buyerOrders  Order[] @relation("BuyerOrders")
+  sellerOrders Order[] @relation("SellerOrders")
+
+  // favorites
+  favorites Favorite[]
+
+  // follows
+  follows   Follow[] @relation("UserFollows")
+  followers Follow[] @relation("UserFollowers")
+}
+
+model Work {
+  id        String   @id @default(cuid())
+  creatorId String?
+  title     String   @default("")
+  desc      String?
+  price     Int      @default(0)
+  stock     Int      @default(0)
+  support7days Boolean @default(true)
+  status    WorkStatus @default(draft)
+  coverUrl  String?
+  categoryId String?
+  subCategoryId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  weight    Int      @default(0)
+  discountPrice   Int?
+  discountStartAt DateTime?
+  discountEndAt   DateTime?
+
+  // 运营下架相关
+  offlineReason String?  @db.Text
+  offlineAt     DateTime?
+  offlineBy     String?
+
+  orderItems OrderItem[]
+  favorites  Favorite[]
+}
+
+// 站内通知（最小实现，仅服务下架通知）
+model Notice {
+  id        Int      @id @default(autoincrement())
+  userId    String
+  type      String   @default("system")
+  title     String
+  content   String   @db.Text
+  workId    String?
+  isRead    Boolean  @default(false)
+  readAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId, isRead])
+}
+
+model Order {
+  id              String      @id @default(cuid())
+  orderNo         String      @unique
+  buyerId         String
+  sellerId        String
+  status          OrderStatus @default(created)
+  amount          Int
+  addressSnapshot Json
+  transactionId   String?
+  paidAt          DateTime?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  // 发货信息
+  expressCompany  String?
+  expressNo       String?
+  shippedAt       DateTime?
+
+  // 确认收货信息
+  receivedAt      DateTime?
+
+  // 完成信息
+  completedAt     DateTime?
+
+  // 运营备注
+  adminNote       String?     @db.Text
+
+  buyer  User @relation("BuyerOrders", fields: [buyerId], references: [id])
+  seller User @relation("SellerOrders", fields: [sellerId], references: [id])
+  items  OrderItem[]
+  opLogs OrderOpLog[]
+  refund OrderRefund?
+}
+
+// 订单操作日志
+model OrderOpLog {
+  id          String   @id @default(cuid())
+  orderId     String
+  action      String   // cancel, ship, complete, refund_request, refund_approve, refund_reject, note
+  payloadJson Json?
+  adminId     String?
+  createdAt   DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+}
+
+// 订单退款信息
+model OrderRefund {
+  id           String    @id @default(cuid())
+  orderId      String    @unique
+  status       String    // requested, approved, rejected, refunded
+  reason       String?   @db.Text
+  requestNote  String?   @db.Text
+  decisionNote String?   @db.Text
+  decidedAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+}
+
+model OrderItem {
+  id        String @id @default(cuid())
+  orderId  String
+  workId   String
+
+  titleSnap String  @db.VarChar(120)
+  priceSnap Int
+  qty       Int
+  coverSnap String? @db.VarChar(512)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  work  Work  @relation(fields: [workId], references: [id])
+
+  @@index([orderId])
+}
+
+model Favorite {
+  id        String   @id @default(cuid())
+  userId    String
+  workId    String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  work Work @relation(fields: [workId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workId])
+}
+
+model Follow {
+  id        String   @id @default(cuid())
+  userId    String
+  creatorId String
+  createdAt DateTime @default(now())
+
+  user    User @relation("UserFollows",   fields: [userId],    references: [id], onDelete: Cascade)
+  creator User @relation("UserFollowers", fields: [creatorId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, creatorId])
+}
+
+// 集市类目（一级/二级同一张表，parentId 为空为一级）
+model Category {
+  id             String     @id @default(cuid())
+  name           String
+  weight         Int        @default(0)
+  parentId       String?
+  dynamicWeight  Int?       // 预留：后期可叠加行为权重
+  behaviorScore  Int?       // 预留：本期不写
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  parent   Category?   @relation("CategoryChildren", fields: [parentId], references: [id], onDelete: Cascade)
+  children Category[] @relation("CategoryChildren")
+
+  @@index([parentId])
+}
+
+model Activity {
+  id           String    @id @default(cuid())
+  title        String
+  imageUrl     String
+  linkUrl      String?
+  linkType     String?   // webview | mini | none
+  appId        String?
+  path         String?
+  enabled      Boolean   @default(true)
+  weight       Int       @default(0)
+  startAt      DateTime?
+  endAt        DateTime?
+  discountMin  Int       @default(70)   // 1-100, e.g. 70 = 7折
+  discountMax  Int       @default(95)
+  durationDays Int?      // 创作者参加后折扣有效天数
+  categoryIds  Json?      // 可参加类目 id 数组（集市类目 id，一级或二级）
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  joins ActivityJoin[]
+}
+
+// 作品参加活动记录
+model ActivityJoin {
+  id         String    @id @default(cuid())
+  activityId String
+  workId     String
+  discount   Int       // 参加时选择的折扣（1-100）
+  createdAt  DateTime  @default(now())
+  leftAt     DateTime? // 退出时间（软删除：非 null 表示已退出，不可再参加同一活动）
+
+  activity Activity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+
+  @@unique([activityId, workId])
+  @@index([workId])
+}
+enum BannerPosition {
+  HOME
+  ACTIVITY
+}
+
+enum BannerTargetType {
+  CATEGORY_L1
+  CATEGORY_L2
+  AUTHOR
+  WORK_DETAIL
+  TOPIC_NEW
+}
+
+model Banner {
+  id         Int              @id @default(autoincrement())
+  title      String?
+  imageUrl   String
+
+  position   BannerPosition
+  sortOrder  Int              @default(0)
+  enabled    Boolean          @default(true)
+
+  targetType BannerTargetType
+  targetId   Int?
+
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  @@index([position, enabled, sortOrder])
+}
+
+// ========== 客服会话系统（MVP） ==========
+enum SupportTicketStatus {
+  OPEN
+  CLOSED
+}
+
+enum SupportSenderType {
+  USER
+  ADMIN
+}
+
+model SupportTicket {
+  id            String              @id @default(cuid())
+  userId        String
+  status        SupportTicketStatus @default(OPEN)
+  lastMessageAt DateTime?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  messages SupportMessage[]
+
+  @@index([userId, status])
+}
+
+model SupportMessage {
+  id         String            @id @default(cuid())
+  ticketId   String
+  senderType SupportSenderType
+  senderId   String?
+  content    String            @db.Text
+  readAt     DateTime?
+  createdAt  DateTime          @default(now())
+
+  ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, createdAt])
+}
+
+// ========== 创作者/卖家管理系统 ==========
+enum CreatorStatus {
+  pending
+  approved
+  rejected
+  frozen
+  banned
+}
+
+model CreatorProfile {
+  id          String        @id @default(cuid())
+  userId      String        @unique
+  status      CreatorStatus @default(pending)
+  phone       String?
+  realName    String?
+  idCard      String?
+  reason      String?       @db.Text  // 拒绝/冻结/封禁原因
+  frozenAt    DateTime?               // 冻结开始时间
+  frozenUntil DateTime?               // 冻结到期时间（null=永久）
+  frozenBy    String?                 // 冻结操作人ID
+  unfrozenAt  DateTime?               // 解冻时间
+  unfrozenBy  String?                 // 解冻操作人ID
+  applyData   Json?                   // 申请资料：intro/images/isOriginal 等
+  appliedAt   DateTime?               // 申请时间
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  opLogs CreatorOpLog[]
+
+  @@index([status])
+}
+
+model CreatorOpLog {
+  id              String   @id @default(cuid())
+  creatorProfileId String
+  action          String   // approve, reject, freeze, ban, recover
+  fromStatus      String?
+  toStatus        String?
+  reason          String?  @db.Text
+  adminId         String?
+  createdAt       DateTime @default(now())
+
+  creatorProfile CreatorProfile @relation(fields: [creatorProfileId], references: [id], onDelete: Cascade)
+
+  @@index([creatorProfileId, createdAt])
+}
+
+// 创作者收款账号/实名银行卡信息
+model CreatorPayout {
+  id              String    @id @default(cuid())
+  userId          String    @unique
+  holderName      String?               // 持卡人姓名
+  holderIdNumber  String?               // 身份证号
+  reservedPhone   String?               // 银行预留手机号
+  cardNumber      String?               // 银行卡号
+  bankName        String?               // 开户银行
+  branchName      String?               // 开户支行
+  realnameAuthed  Boolean   @default(false)  // 是否已实名授权
+  status          String    @default("draft") // draft/submitted/verified
+  verifiedAt      DateTime?             // 审核时间
+  verifiedBy      String?               // 审核人 adminId
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([userId])
+}

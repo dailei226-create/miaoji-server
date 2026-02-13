@@ -1,0 +1,674 @@
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common'
+import { OrderStatus } from '@prisma/client'
+import { PrismaService } from '../prisma/prisma.service'
+import { CreatorsService } from '../creators/creators.service'
+import { CreateOrderDto } from './dto'
+import { randomBytes } from 'crypto'
+
+@Injectable()
+export class OrdersService {
+  constructor(
+    private prisma: PrismaService,
+    private creators: CreatorsService,
+  ) {}
+
+  /**
+   * [BUGFIX] 计算有效价格：同时考虑作品自身折扣和活动折扣
+   */
+  private getEffectivePrice(
+    work: {
+      price?: number | null
+      discountPrice?: number | null
+      discountStartAt?: Date | string | null
+      discountEndAt?: Date | string | null
+    },
+    activityDiscount?: number | null
+  ) {
+    const price = typeof work?.price === 'number' ? work.price : 0
+    const now = new Date()
+
+    // 1. 作品自身折扣
+    let workDiscountPrice: number | null = null
+    const discountPrice =
+      typeof work?.discountPrice === 'number' ? work.discountPrice : null
+    const startAt = work?.discountStartAt ? new Date(work.discountStartAt) : null
+    const endAt = work?.discountEndAt ? new Date(work.discountEndAt) : null
+    if (discountPrice != null && startAt && endAt && now >= startAt && now <= endAt) {
+      workDiscountPrice = discountPrice
+    }
+
+    // 2. 活动折扣（如果参加了当前生效活动）
+    let activityPrice: number | null = null
+    if (activityDiscount != null && activityDiscount >= 1 && activityDiscount <= 100) {
+      activityPrice = Math.round((price * activityDiscount) / 100)
+    }
+
+    // 取更低者（更利于买家）
+    const candidates = [price]
+    if (workDiscountPrice != null) candidates.push(workDiscountPrice)
+    if (activityPrice != null) candidates.push(activityPrice)
+    return Math.min(...candidates)
+  }
+
+  /**
+   * 查询作品的活动折扣（如果参加了当前生效活动）
+   */
+  private async getActivityDiscount(workId: string): Promise<number | null> {
+    try {
+      const now = new Date()
+      // 查找所有当前生效活动
+      const activities = await this.prisma.activity.findMany({
+        where: {
+          enabled: true,
+          AND: [
+            { OR: [{ startAt: null }, { startAt: { lte: now } }] },
+            { OR: [{ endAt: null }, { endAt: { gte: now } }] },
+          ],
+        },
+      })
+      if (activities.length === 0) return null
+
+      const activityIds = activities.map((a) => a.id)
+      // 查找这个作品在任一生效活动的参加记录（只查未退出的）
+      const join = await this.prisma.activityJoin.findFirst({
+        where: {
+          activityId: { in: activityIds },
+          workId,
+          leftAt: null,
+        },
+      })
+      if (join) {
+        return join.discount
+      }
+    } catch (e) {
+      console.error('[getActivityDiscount] error:', e)
+    }
+    return null
+  }
+
+  private sanitizeItems(items: any[]) {
+    return (items || []).map((item) => {
+      let cover = item.coverSnap || ''
+      if (
+        cover &&
+        (cover.includes('http://tmp/') ||
+          cover.includes('/_tmp/') ||
+          cover.includes('/tmp/') ||
+          cover.includes('127.0.0.1:61120') ||
+          cover.startsWith('wxfile://'))
+      ) {
+        cover = null
+      }
+      return { ...item, coverSnap: cover }
+    })
+  }
+
+  // 创建订单：生成订单 + 生成订单项
+  async create(userId: string, dto: CreateOrderDto) {
+    const workId = dto.workId
+    const qty = (dto as any).qty ?? (dto as any).quantity ?? (dto as any).count ?? 1
+    const addressId = dto.addressId
+    const snapshotFromDto = (dto as any).addressSnapshot
+
+    if (!workId || qty < 1) {
+      throw new BadRequestException('参数错误')
+    }
+    if (!addressId) {
+      throw new BadRequestException('请先添加收货地址')
+    }
+
+    // [BUGFIX] 在事务之前查询活动折扣
+    const activityDiscount = await this.getActivityDiscount(workId)
+
+    // 先查作品获取 sellerId，然后检查卖家状态
+    const workForSeller = await this.prisma.work.findUnique({ where: { id: workId } })
+    if (!workForSeller) throw new NotFoundException('作品不存在')
+    const sellerId = workForSeller.creatorId && String(workForSeller.creatorId) ? String(workForSeller.creatorId) : userId
+
+    // [卖家管理] 检查卖家状态
+    if (sellerId !== userId) {
+      const sellerCheck = await this.creators.checkSellerCanOperate(sellerId)
+      if (!sellerCheck.ok) {
+        throw new BadRequestException(sellerCheck.message || '卖家不可接单')
+      }
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      // 查作品
+      const work = await tx.work.findUnique({
+        where: { id: workId },
+      })
+      if (!work) throw new NotFoundException('作品不存在')
+      const stock = typeof work.stock === 'number' ? work.stock : 0
+      if (qty > stock) throw new BadRequestException('out_of_stock')
+
+      // 生成唯一订单号
+      const orderNo = `MO${Date.now()}${randomBytes(4).toString('hex')}`
+      // [BUGFIX] 使用活动折扣计算有效价格
+      const unitPrice = this.getEffectivePrice(work, activityDiscount)
+      if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+        throw new BadRequestException('invalid_price')
+      }
+      const amount = Math.max(0, unitPrice) * qty
+
+      // 订单地址快照：优先使用前端传入的完整快照（name/phone/province/city/detail），否则仅存 id
+      const addressSnapshot =
+        snapshotFromDto && typeof snapshotFromDto === 'object' && (snapshotFromDto.name || snapshotFromDto.phone)
+          ? { id: addressId, ...snapshotFromDto }
+          : addressId
+            ? { id: addressId }
+            : {}
+
+      // 创建订单 + 订单项
+      const order = await tx.order.create({
+        data: {
+          orderNo,
+          buyerId: userId,
+          sellerId,
+          status: 'created',
+          amount,
+          addressSnapshot,
+          items: {
+            create: [
+              {
+                workId: work.id,
+                titleSnap: work.title || work.id,
+                priceSnap: Math.max(0, unitPrice),
+                qty,
+                coverSnap: work.coverUrl || null,
+              },
+            ],
+          },
+        },
+        include: { items: true },
+      })
+
+      return {
+        ...order,
+        out_trade_no: order.orderNo,
+      }
+    })
+  }
+
+  // 模拟支付：如果订单已 paid 直接返回；否则改为 paid
+  async mockPay(userId: string, orderId: string) {
+    if (!orderId) throw new BadRequestException('参数错误')
+
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: { items: true },
+    })
+    if (!order) throw new NotFoundException('订单不存在')
+    if (order.buyerId !== userId) throw new ForbiddenException('无权限')
+
+    if (order.status === 'paid') return order
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.order.update({
+        where: { id: orderId },
+        data: { status: 'paid' },
+        include: { items: true },
+      })
+      for (const item of updated.items || []) {
+        const qty = item.qty || 0
+        const res = await tx.work.updateMany({
+          where: { id: item.workId, stock: { gte: qty } },
+          data: { stock: { decrement: qty } },
+        })
+        if (!res || res.count === 0) {
+          throw new BadRequestException('out_of_stock')
+        }
+      }
+      return {
+        ...updated,
+        items: this.sanitizeItems(updated.items),
+        canPay: updated.status === 'created',
+        payable: updated.status === 'created',
+        totalAmount: updated.amount,
+      }
+    })
+  }
+
+  // 取消订单：仅 created 可取消
+  async cancel(userId: string, orderId: string) {
+    if (!orderId) throw new BadRequestException('参数错误')
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+    })
+    if (!order) throw new NotFoundException('订单不存在')
+    if (order.buyerId !== userId) throw new ForbiddenException('无权限')
+    if (order.status !== 'created') {
+      throw new BadRequestException('status_not_allowed')
+    }
+    return this.prisma.order.update({
+      where: { id: orderId },
+      data: { status: 'canceled' },
+    })
+  }
+
+  // 买家订单列表
+  async listBuyer(userId: string) {
+    const items = await this.prisma.order.findMany({
+      where: { buyerId: userId },
+      orderBy: { createdAt: 'desc' },
+      include: { items: true },
+    })
+    return {
+      items: items.map((order) => ({
+        ...order,
+        items: this.sanitizeItems(order.items),
+        canPay: order.status === 'created',
+        payable: order.status === 'created',
+        totalAmount: order.amount,
+      })),
+    }
+  }
+
+  // 用户订单列表（买家或卖家）
+  async listByUser(userId: string) {
+    const items = await this.prisma.order.findMany({
+      where: { OR: [{ buyerId: userId }, { sellerId: userId }] },
+      orderBy: { createdAt: 'desc' },
+      include: { items: true },
+    })
+    return {
+      items: items.map((order) => ({
+        ...order,
+        items: this.sanitizeItems(order.items),
+        canPay: order.status === 'created',
+        payable: order.status === 'created',
+        totalAmount: order.amount,
+      })),
+    }
+  }
+
+  // 卖家订单列表：按 sellerId 过滤，支持 ?status=created|paid|canceled
+  async listSeller(userId: string, status?: string) {
+    const allowed = new Set<OrderStatus>([OrderStatus.created, OrderStatus.paid, OrderStatus.canceled])
+    const st = status ? String(status) : ''
+    const stEnum = allowed.has(st as OrderStatus) ? (st as OrderStatus) : undefined
+    const where: { sellerId: string; status?: OrderStatus } = { sellerId: userId }
+    if (stEnum) where.status = stEnum
+
+    const items = await this.prisma.order.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      include: { items: true },
+    })
+    return {
+      items: items.map((order) => ({
+        ...order,
+        items: this.sanitizeItems(order.items),
+        canPay: order.status === 'created',
+        payable: order.status === 'created',
+        totalAmount: order.amount,
+      })),
+    }
+  }
+
+  // 订单详情：买家或卖家可看
+  async detail(userId: string, id: string) {
+    const order = await this.prisma.order.findUnique({
+      where: { id },
+      include: { items: true },
+    })
+    if (!order) throw new NotFoundException('订单不存在')
+    if (order.buyerId !== userId && order.sellerId !== userId) {
+      throw new ForbiddenException('无权限')
+    }
+    const canPay = order.status === 'created'
+    return {
+      ...order,
+      items: this.sanitizeItems(order.items),
+      canPay,
+      payable: canPay,
+      totalAmount: order.amount,
+    }
+  }
+
+  // 占位：已发货（不新增表，备注写入 addressSnapshot）
+  async markShipped(
+    userId: string,
+    orderId: string,
+    expressCompany?: string,
+    expressNo?: string
+  ) {
+    const order = await this.prisma.order.findUnique({ where: { id: orderId } })
+    if (!order) throw new NotFoundException('订单不存在')
+    // 只允许卖家操作
+    if (order.sellerId !== userId) {
+      throw new ForbiddenException('无权限操作此订单')
+    }
+    // [卖家管理] 检查卖家状态
+    const sellerCheck = await this.creators.checkSellerCanOperate(userId)
+    if (!sellerCheck.ok) {
+      throw new BadRequestException(sellerCheck.message || '卖家不可发货')
+    }
+    // 只有 paid 状态可发货
+    if (order.status !== OrderStatus.paid) {
+      throw new BadRequestException('订单状态不允许发货')
+    }
+    return this.prisma.order.update({
+      where: { id: orderId },
+      data: {
+        status: OrderStatus.shipped,
+        expressCompany: expressCompany || null,
+        expressNo: expressNo || null,
+        shippedAt: new Date(),
+      },
+    })
+  }
+
+  // 占位：售后中（不新增表，备注写入 addressSnapshot）
+  async markAfterSale(orderId: string) {
+    const order = await this.prisma.order.findUnique({ where: { id: orderId } })
+    if (!order) throw new NotFoundException('订单不存在')
+    const snapshot = (order.addressSnapshot as any) || {}
+    return this.prisma.order.update({
+      where: { id: orderId },
+      data: { addressSnapshot: { ...snapshot, mvpNote: 'after_sale' } },
+    })
+  }
+
+  // ========== 管理员操作 ==========
+
+  // 管理员订单列表（支持筛选）
+  async adminList(query?: { status?: string; q?: string; page?: number; pageSize?: number }) {
+    const { status, q, page = 1, pageSize = 20 } = query || {}
+    
+    const where: any = {}
+    if (status && status !== 'all') {
+      where.status = status
+    }
+    if (q) {
+      where.OR = [
+        { orderNo: { contains: q } },
+        { buyerId: { contains: q } },
+      ]
+    }
+
+    const [items, total] = await Promise.all([
+      this.prisma.order.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        include: { items: true, refund: true, opLogs: { orderBy: { createdAt: 'desc' } } },
+      }),
+      this.prisma.order.count({ where }),
+    ])
+
+    return { items, total, page, pageSize }
+  }
+
+  // 管理员订单详情
+  async adminDetail(orderId: string) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: { 
+        items: true, 
+        refund: true, 
+        opLogs: { orderBy: { createdAt: 'desc' } },
+        buyer: { select: { id: true, nickname: true, openId: true } },
+        seller: { select: { id: true, nickname: true, openId: true } },
+      },
+    })
+    if (!order) throw new NotFoundException('订单不存在')
+    return order
+  }
+
+  // 写操作日志
+  private async writeOpLog(orderId: string, action: string, payload?: any, adminId?: string) {
+    await this.prisma.orderOpLog.create({
+      data: {
+        orderId,
+        action,
+        payloadJson: payload || null,
+        adminId: adminId || null,
+      },
+    })
+  }
+
+  // 管理员关闭订单（仅 created -> canceled）
+  async adminCancel(orderId: string, note?: string, adminId?: string) {
+    const order = await this.prisma.order.findUnique({ where: { id: orderId } })
+    if (!order) throw new NotFoundException('订单不存在')
+    if (order.status !== 'created') {
+      throw new BadRequestException('仅待付款订单可关闭')
+    }
+
+    const updated = await this.prisma.order.update({
+      where: { id: orderId },
+      data: { status: 'canceled' },
+    })
+    await this.writeOpLog(orderId, 'cancel', { note }, adminId)
+    return updated
+  }
+
+  // 管理员发货（仅 paid -> shipped）
+  async adminShip(orderId: string, data: { expressCompany?: string; expressNo?: string; note?: string }, adminId?: string) {
+    const order = await this.prisma.order.findUnique({ where: { id: orderId } })
+    if (!order) throw new NotFoundException('订单不存在')
+    if (order.status !== 'paid') {
+      throw new BadRequestException('仅已付款订单可发货')
+    }
+
+    const updated = await this.prisma.order.update({
+      where: { id: orderId },
+      data: { 
+        status: 'shipped',
+        expressCompany: data.expressCompany || null,
+        expressNo: data.expressNo || null,
+        shippedAt: new Date(),
+      },
+    })
+    await this.writeOpLog(orderId, 'ship', data, adminId)
+    return updated
+  }
+
+  // 管理员完成订单（仅 shipped -> completed）
+  async adminComplete(orderId: string, note?: string, adminId?: string) {
+    const order = await this.prisma.order.findUnique({ where: { id: orderId } })
+    if (!order) throw new NotFoundException('订单不存在')
+    if (order.status !== 'shipped') {
+      throw new BadRequestException('仅已发货订单可完成')
+    }
+
+    const updated = await this.prisma.order.update({
+      where: { id: orderId },
+      data: { 
+        status: 'completed',
+        completedAt: new Date(),
+      },
+    })
+    await this.writeOpLog(orderId, 'complete', { note }, adminId)
+    return updated
+  }
+
+  // 发起退款申请（paid/shipped -> refund_requested）
+  async adminRefundRequest(orderId: string, data: { reason?: string; note?: string }, adminId?: string) {
+    const order = await this.prisma.order.findUnique({ where: { id: orderId }, include: { refund: true } })
+    if (!order) throw new NotFoundException('订单不存在')
+    if (!['paid', 'shipped'].includes(order.status)) {
+      throw new BadRequestException('仅已付款或已发货订单可申请退款')
+    }
+    if (order.refund) {
+      throw new BadRequestException('已存在退款申请')
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.order.update({
+        where: { id: orderId },
+        data: { status: 'refund_requested' },
+      }),
+      this.prisma.orderRefund.create({
+        data: {
+          orderId,
+          status: 'requested',
+          reason: data.reason || null,
+          requestNote: data.note || null,
+        },
+      }),
+    ])
+    await this.writeOpLog(orderId, 'refund_request', data, adminId)
+    return this.adminDetail(orderId)
+  }
+
+  // 同意退款（refund_requested -> refund_approved）
+  async adminRefundApprove(orderId: string, note?: string, adminId?: string) {
+    const order = await this.prisma.order.findUnique({ where: { id: orderId }, include: { refund: true } })
+    if (!order) throw new NotFoundException('订单不存在')
+    if (order.status !== 'refund_requested') {
+      throw new BadRequestException('仅退款申请中的订单可同意')
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.order.update({
+        where: { id: orderId },
+        data: { status: 'refund_approved' },
+      }),
+      this.prisma.orderRefund.update({
+        where: { orderId },
+        data: { 
+          status: 'approved',
+          decisionNote: note || null,
+          decidedAt: new Date(),
+        },
+      }),
+    ])
+    await this.writeOpLog(orderId, 'refund_approve', { note }, adminId)
+    return this.adminDetail(orderId)
+  }
+
+  // 拒绝退款（refund_requested -> refund_rejected）
+  async adminRefundReject(orderId: string, data: { reason: string; note?: string }, adminId?: string) {
+    if (!data.reason) {
+      throw new BadRequestException('拒绝理由必填')
+    }
+    const order = await this.prisma.order.findUnique({ where: { id: orderId }, include: { refund: true } })
+    if (!order) throw new NotFoundException('订单不存在')
+    if (order.status !== 'refund_requested') {
+      throw new BadRequestException('仅退款申请中的订单可拒绝')
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.order.update({
+        where: { id: orderId },
+        data: { status: 'refund_rejected' },
+      }),
+      this.prisma.orderRefund.update({
+        where: { orderId },
+        data: { 
+          status: 'rejected',
+          decisionNote: `${data.reason}${data.note ? '\n' + data.note : ''}`,
+          decidedAt: new Date(),
+        },
+      }),
+    ])
+    await this.writeOpLog(orderId, 'refund_reject', data, adminId)
+    return this.adminDetail(orderId)
+  }
+
+  // 执行退款（本期禁用）
+  async adminRefundExecute(orderId: string) {
+    throw new ForbiddenException('退款未开启（部署后接微信退款）')
+  }
+
+  // 更新运营备注
+  async adminUpdateNote(orderId: string, note: string, adminId?: string) {
+    const order = await this.prisma.order.findUnique({ where: { id: orderId } })
+    if (!order) throw new NotFoundException('订单不存在')
+
+    const updated = await this.prisma.order.update({
+      where: { id: orderId },
+      data: { adminNote: note },
+    })
+    await this.writeOpLog(orderId, 'note', { note }, adminId)
+    return updated
+  }
+
+  // ========== 买家端接口 ==========
+
+  // 确认收货（买家）
+  async confirmReceipt(userId: string, orderId: string) {
+    const order = await this.prisma.order.findUnique({ where: { id: orderId } })
+    if (!order) throw new NotFoundException('订单不存在')
+    if (order.buyerId !== userId) throw new BadRequestException('无权操作此订单')
+    if (order.status !== 'shipped') {
+      throw new BadRequestException('仅已发货订单可确认收货')
+    }
+
+    const updated = await this.prisma.order.update({
+      where: { id: orderId },
+      data: { 
+        status: 'received',
+        receivedAt: new Date(),
+      },
+    })
+    await this.writeOpLog(orderId, 'confirm_receipt', {}, userId)
+    return { ok: true, status: updated.status }
+  }
+
+  // 申请退款/退货退款（买家）
+  async requestRefund(userId: string, orderId: string, reason?: string, type?: 'refund' | 'return_refund') {
+    const order = await this.prisma.order.findUnique({ where: { id: orderId } })
+    if (!order) throw new NotFoundException('订单不存在')
+    if (order.buyerId !== userId) throw new BadRequestException('无权操作此订单')
+
+    // 检查状态
+    const refundType = type || 'refund'
+    if (refundType === 'refund') {
+      // 仅退款：仅 paid 状态可申请
+      if (order.status !== 'paid' && order.status !== 'paid_mock') {
+        throw new BadRequestException('仅已付款且未发货订单可申请退款')
+      }
+    } else {
+      // 退货退款：仅 shipped 状态可申请
+      if (order.status !== 'shipped') {
+        throw new BadRequestException('仅已发货订单可申请退货退款')
+      }
+    }
+
+    // 检查是否已有退款申请
+    const existingRefund = await this.prisma.orderRefund.findUnique({ where: { orderId } })
+    if (existingRefund && existingRefund.status !== 'rejected') {
+      throw new BadRequestException('已有退款申请，请勿重复提交')
+    }
+
+    // 创建或更新退款申请
+    if (existingRefund) {
+      await this.prisma.orderRefund.update({
+        where: { orderId },
+        data: {
+          status: 'pending',
+          reason: reason || null,
+          requestNote: refundType,
+          decidedAt: null,
+          decisionNote: null,
+        },
+      })
+    } else {
+      await this.prisma.orderRefund.create({
+        data: {
+          orderId,
+          status: 'pending',
+          reason: reason || null,
+          requestNote: refundType,
+        },
+      })
+    }
+
+    // 更新订单状态
+    await this.prisma.order.update({
+      where: { id: orderId },
+      data: { status: 'refund_requested' },
+    })
+
+    await this.writeOpLog(orderId, 'refund_request_buyer', { reason, type: refundType }, userId)
+    return { ok: true, status: 'refund_requested' }
+  }
+}

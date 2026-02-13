@@ -1,0 +1,12 @@
+import { Injectable } from '@nestjs/common';
+
+@Injectable()
+export class PayService {
+  async prepay(openid: string, total: number, description: string) {
+    return {
+      success: true,
+      message: '内测中，暂未开放支付',
+      data: { openid, total, description },
+    };
+  }
+}

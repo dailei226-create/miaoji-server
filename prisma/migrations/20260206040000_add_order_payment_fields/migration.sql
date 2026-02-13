@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE `Order` ADD COLUMN `transactionId` VARCHAR(191) NULL, ADD COLUMN `paidAt` DATETIME(3) NULL;

@@ -1,0 +1,13 @@
+import { Controller, Post, Body } from '@nestjs/common';
+import { PayService } from './pay.service';
+
+@Controller('pay')
+export class PayController {
+  constructor(private readonly payService: PayService) {}
+
+  @Post('prepay')
+  async prepay(@Body() body: any) {
+    const { openid, total, description } = body;
+    return this.payService.prepay(openid, total, description);
+  }
+}

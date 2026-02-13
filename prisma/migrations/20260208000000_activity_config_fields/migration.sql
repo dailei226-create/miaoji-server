@@ -1,0 +1,7 @@
+-- AlterTable
+ALTER TABLE `Activity` ADD COLUMN `linkType` VARCHAR(191) NULL,
+    ADD COLUMN `appId` VARCHAR(191) NULL,
+    ADD COLUMN `path` VARCHAR(512) NULL,
+    ADD COLUMN `discountMin` INTEGER NULL,
+    ADD COLUMN `discountMax` INTEGER NULL,
+    ADD COLUMN `durationDays` INTEGER NULL;
