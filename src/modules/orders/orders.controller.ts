@@ -94,10 +94,28 @@ export class OrdersController {
   async requestRefund(
     @Req() req: AuthRequest,
     @Param('id') id: string,
-    @Body() body: { reason?: string; type?: 'refund' | 'return_refund' }
+    @Body() body: { reason?: string; type?: 'refund' | 'return_refund'; action?: 'modify' }
   ) {
     const userId = req.user?.sub as string;
-    return this.orders.requestRefund(userId, id, body.reason, body.type);
+    return this.orders.requestRefund(userId, id, body.reason, body.type, body.action);
+  }
+
+  // 取消退款申请（买家）
+  @Post(':id/cancel-refund')
+  async cancelRefund(@Req() req: AuthRequest, @Param('id') id: string) {
+    const userId = req.user?.sub as string;
+    return this.orders.cancelRefund(userId, id);
+  }
+
+  // 发布者处理售后意见（只写 opLog，不改订单/退款状态）
+  @Post(':id/after-sale/decision')
+  async afterSaleDecision(
+    @Req() req: AuthRequest,
+    @Param('id') id: string,
+    @Body() body: { decision?: string; reason?: string; returnAddress?: { name?: string; phone?: string; fullText?: string } },
+  ) {
+    const userId = req.user?.sub as string;
+    return this.orders.afterSaleSellerDecision(userId, id, body);
   }
 
   @Get('seller')

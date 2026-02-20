@@ -91,6 +91,25 @@ export class OrdersService {
     return null
   }
 
+  /**
+   * 从 opLogs 聚合最新一条 after_sale_seller_decision
+   */
+  private getAfterSaleSellerDecision(opLogs: { action: string; createdAt: Date; payloadJson?: any }[]): any {
+    if (!opLogs || !Array.isArray(opLogs)) return null
+    const logs = opLogs.filter((l) => l.action === 'after_sale_seller_decision')
+    if (logs.length === 0) return null
+    const latest = logs.reduce((a, b) => (a.createdAt > b.createdAt ? a : b))
+    const p = latest.payloadJson as any
+    if (!p) return null
+    return {
+      decision: p.decision || null,
+      reason: p.reason ?? null,
+      returnAddress: p.returnAddress ?? null,
+      decidedAt: p.decidedAt ?? null,
+      opCreatedAt: latest.createdAt ? new Date(latest.createdAt).toISOString() : null,
+    }
+  }
+
   private sanitizeItems(items: any[]) {
     return (items || []).map((item) => {
       let cover = item.coverSnap || ''
@@ -252,11 +271,29 @@ export class OrdersService {
 
   // 买家订单列表
   async listBuyer(userId: string) {
+    // [DEBUG] 临时日志 - 验证后删除
+    console.log('[listBuyer] userId =', userId)
     const items = await this.prisma.order.findMany({
       where: { buyerId: userId },
       orderBy: { createdAt: 'desc' },
       include: { items: true },
     })
+    console.log('[listBuyer] found', items.length, 'orders')
+
+    // 统计每笔订单的“退款申请次数”（买家端 request-refund 提交次数）
+    const orderIds = items.map((x) => x.id)
+    const applyCountMap: Record<string, number> = {}
+    if (orderIds.length > 0) {
+      const groups = await this.prisma.orderOpLog.groupBy({
+        by: ['orderId'],
+        where: { orderId: { in: orderIds }, action: 'refund_request_buyer' },
+        _count: { _all: true },
+      })
+      for (const g of groups) {
+        applyCountMap[g.orderId] = g._count._all
+      }
+    }
+
     return {
       items: items.map((order) => ({
         ...order,
@@ -264,6 +301,7 @@ export class OrdersService {
         canPay: order.status === 'created',
         payable: order.status === 'created',
         totalAmount: order.amount,
+        refundApplyCount: applyCountMap[order.id] || 0,
       })),
     }
   }
@@ -297,16 +335,20 @@ export class OrdersService {
     const items = await this.prisma.order.findMany({
       where,
       orderBy: { createdAt: 'desc' },
-      include: { items: true },
+      include: { items: true, refund: true, opLogs: { orderBy: { createdAt: 'desc' } } },
     })
     return {
-      items: items.map((order) => ({
-        ...order,
-        items: this.sanitizeItems(order.items),
-        canPay: order.status === 'created',
-        payable: order.status === 'created',
-        totalAmount: order.amount,
-      })),
+      items: items.map((order) => {
+        const afterSaleSellerDecision = this.getAfterSaleSellerDecision(order.opLogs)
+        return {
+          ...order,
+          items: this.sanitizeItems(order.items),
+          canPay: order.status === 'created',
+          payable: order.status === 'created',
+          totalAmount: order.amount,
+          afterSaleSellerDecision,
+        }
+      }),
     }
   }
 
@@ -314,19 +356,21 @@ export class OrdersService {
   async detail(userId: string, id: string) {
     const order = await this.prisma.order.findUnique({
       where: { id },
-      include: { items: true },
+      include: { items: true, refund: true, opLogs: { orderBy: { createdAt: 'desc' } } },
     })
     if (!order) throw new NotFoundException('订单不存在')
     if (order.buyerId !== userId && order.sellerId !== userId) {
       throw new ForbiddenException('无权限')
     }
     const canPay = order.status === 'created'
+    const afterSaleSellerDecision = this.getAfterSaleSellerDecision(order.opLogs)
     return {
       ...order,
       items: this.sanitizeItems(order.items),
       canPay,
       payable: canPay,
       totalAmount: order.amount,
+      afterSaleSellerDecision,
     }
   }
 
@@ -391,7 +435,7 @@ export class OrdersService {
       ]
     }
 
-    const [items, total] = await Promise.all([
+    const [rows, total] = await Promise.all([
       this.prisma.order.findMany({
         where,
         orderBy: { createdAt: 'desc' },
@@ -401,6 +445,11 @@ export class OrdersService {
       }),
       this.prisma.order.count({ where }),
     ])
+
+    const items = rows.map((order) => ({
+      ...order,
+      afterSaleSellerDecision: this.getAfterSaleSellerDecision(order.opLogs),
+    }))
 
     return { items, total, page, pageSize }
   }
@@ -418,7 +467,10 @@ export class OrdersService {
       },
     })
     if (!order) throw new NotFoundException('订单不存在')
-    return order
+    return {
+      ...order,
+      afterSaleSellerDecision: this.getAfterSaleSellerDecision(order.opLogs),
+    }
   }
 
   // 写操作日志
@@ -470,12 +522,13 @@ export class OrdersService {
     return updated
   }
 
-  // 管理员完成订单（仅 shipped -> completed）
+  // 管理员完成订单（统一口径下仅允许 received -> completed）
   async adminComplete(orderId: string, note?: string, adminId?: string) {
     const order = await this.prisma.order.findUnique({ where: { id: orderId } })
     if (!order) throw new NotFoundException('订单不存在')
-    if (order.status !== 'shipped') {
-      throw new BadRequestException('仅已发货订单可完成')
+    // 交易完成以“买家确认收货”为准；管理员仅允许在 received 状态下补单。
+    if (order.status !== 'received') {
+      throw new BadRequestException('仅已收货订单可完成')
     }
 
     const updated = await this.prisma.order.update({
@@ -598,45 +651,113 @@ export class OrdersService {
     const order = await this.prisma.order.findUnique({ where: { id: orderId } })
     if (!order) throw new NotFoundException('订单不存在')
     if (order.buyerId !== userId) throw new BadRequestException('无权操作此订单')
+    // 幂等：重复点击/重复请求不应重复写 receivedAt/completedAt
+    if (order.status === 'received' || order.status === 'completed') {
+      return { ok: true, status: order.status }
+    }
     if (order.status !== 'shipped') {
-      throw new BadRequestException('仅已发货订单可确认收货')
+      throw new BadRequestException('订单状态不允许确认收货')
     }
 
-    const updated = await this.prisma.order.update({
-      where: { id: orderId },
-      data: { 
-        status: 'received',
-        receivedAt: new Date(),
-      },
+    const now = new Date()
+    const updated = await this.prisma.$transaction(async (tx) => {
+      // Step 1: 仅 shipped -> received（并发下用 updateMany 保证只写一次）
+      const step1 = await tx.order.updateMany({
+        where: { id: orderId, status: 'shipped' },
+        data: { status: 'received', receivedAt: now },
+      })
+      if (step1.count === 0) {
+        // 可能并发已处理；再次读取确认幂等返回
+        const latest = await tx.order.findUnique({ where: { id: orderId } })
+        if (!latest) throw new NotFoundException('订单不存在')
+        if (latest && (latest.status === 'received' || latest.status === 'completed')) {
+          return latest
+        }
+        throw new BadRequestException('订单状态不允许确认收货')
+      }
+
+      // Step 2: 自动升级为 completed（交易完成），仅 received -> completed
+      await tx.order.updateMany({
+        where: { id: orderId, status: 'received' },
+        data: { status: 'completed', completedAt: now },
+      })
+      const latest = await tx.order.findUnique({ where: { id: orderId } })
+      if (!latest) throw new NotFoundException('订单不存在')
+      return latest
     })
     await this.writeOpLog(orderId, 'confirm_receipt', {}, userId)
     return { ok: true, status: updated.status }
   }
 
   // 申请退款/退货退款（买家）
-  async requestRefund(userId: string, orderId: string, reason?: string, type?: 'refund' | 'return_refund') {
+  async requestRefund(
+    userId: string,
+    orderId: string,
+    reason?: string,
+    type?: 'refund' | 'return_refund',
+    action?: 'modify',
+  ) {
     const order = await this.prisma.order.findUnique({ where: { id: orderId } })
     if (!order) throw new NotFoundException('订单不存在')
     if (order.buyerId !== userId) throw new BadRequestException('无权操作此订单')
 
-    // 检查状态
-    const refundType = type || 'refund'
-    if (refundType === 'refund') {
-      // 仅退款：仅 paid 状态可申请
-      if (order.status !== 'paid' && order.status !== 'paid_mock') {
-        throw new BadRequestException('仅已付款且未发货订单可申请退款')
-      }
-    } else {
-      // 退货退款：仅 shipped 状态可申请
-      if (order.status !== 'shipped') {
-        throw new BadRequestException('仅已发货订单可申请退货退款')
-      }
+    const opAction = (action || '') as string
+    // action 白名单：仅允许空/undefined 或 modify
+    if (opAction && opAction !== 'modify') {
+      throw new BadRequestException('invalid_action')
     }
 
+    // 检查状态
     // 检查是否已有退款申请
     const existingRefund = await this.prisma.orderRefund.findUnique({ where: { orderId } })
-    if (existingRefund && existingRefund.status !== 'rejected') {
-      throw new BadRequestException('已有退款申请，请勿重复提交')
+
+    // 防重复提交：已在申请中时，action 为空必须拒绝（提示走 modify）
+    if (order.status === 'refund_requested' && !opAction) {
+      throw new BadRequestException('已提交申请，如需修改请使用 modify')
+    }
+
+    // 确定 refundType：优先信任参数，否则沿用既有申请的 requestNote
+    const refundType = (type || (existingRefund?.requestNote as any) || 'refund') as 'refund' | 'return_refund'
+
+    // 校验 refundType 与订单发货事实是否一致（不依赖当前 order.status）
+    if (refundType === 'return_refund') {
+      if (!order.shippedAt) throw new BadRequestException('未发货订单不可申请退货退款')
+    } else {
+      if (order.shippedAt) throw new BadRequestException('已发货订单仅可申请退货退款')
+    }
+
+    // 修改申请：仅 refund_requested + requested 可修改（不计入申请次数）
+    if (opAction === 'modify') {
+      if (!existingRefund) throw new BadRequestException('退款申请不存在')
+      if (order.status !== 'refund_requested' || existingRefund.status !== 'requested') {
+        throw new BadRequestException('当前状态不可修改退款申请')
+      }
+      await this.prisma.orderRefund.update({
+        where: { orderId },
+        data: {
+          reason: reason || null,
+          requestNote: refundType,
+        },
+      })
+      await this.writeOpLog(orderId, 'refund_modify_buyer', { reason, type: refundType }, userId)
+      return { ok: true, status: 'refund_requested' }
+    }
+
+    // action 为空：发起/再次申请的状态校验
+    const allowedApplyStatuses = new Set(['paid', 'paid_mock', 'shipped'])
+    if (order.status !== 'refund_rejected' && !allowedApplyStatuses.has(String(order.status))) {
+      throw new BadRequestException('订单状态不允许申请退款')
+    }
+
+    // 再次申请次数限制：最多 2 次（含首次）
+    const applyCount = await this.prisma.orderOpLog.count({
+      where: { orderId, action: 'refund_request_buyer' },
+    })
+    if (applyCount >= 2 && order.status === 'refund_rejected') {
+      throw new BadRequestException('退款申请次数已达上限')
+    }
+    if (applyCount >= 2 && existingRefund && existingRefund.status === 'rejected') {
+      throw new BadRequestException('退款申请次数已达上限')
     }
 
     // 创建或更新退款申请
@@ -644,7 +765,7 @@ export class OrdersService {
       await this.prisma.orderRefund.update({
         where: { orderId },
         data: {
-          status: 'pending',
+          status: 'requested',
           reason: reason || null,
           requestNote: refundType,
           decidedAt: null,
@@ -655,7 +776,7 @@ export class OrdersService {
       await this.prisma.orderRefund.create({
         data: {
           orderId,
-          status: 'pending',
+          status: 'requested',
           reason: reason || null,
           requestNote: refundType,
         },
@@ -670,5 +791,91 @@ export class OrdersService {
 
     await this.writeOpLog(orderId, 'refund_request_buyer', { reason, type: refundType }, userId)
     return { ok: true, status: 'refund_requested' }
+  }
+
+  // 取消退款申请（买家）
+  // - 仅允许订单 status=refund_requested 时取消
+  // - 取消后订单状态回退：未发货 -> paid（paid_mock 归一到 paid）；已发货 -> shipped
+  // - 不改表：删除 OrderRefund，写 OpLog refund_cancel_buyer
+  async cancelRefund(userId: string, orderId: string) {
+    const order = await this.prisma.order.findUnique({ where: { id: orderId } })
+    if (!order) throw new NotFoundException('订单不存在')
+    if (order.buyerId !== userId) throw new BadRequestException('无权操作此订单')
+    if (order.status !== 'refund_requested') {
+      throw new BadRequestException('仅退款申请中的订单可取消申请')
+    }
+
+    const existingRefund = await this.prisma.orderRefund.findUnique({ where: { orderId } })
+    if (!existingRefund) {
+      // 状态异常但尽量自愈：直接回退订单状态并记录日志
+      const restoreStatus = order.shippedAt ? 'shipped' : 'paid'
+      await this.prisma.$transaction([
+        this.prisma.order.update({ where: { id: orderId }, data: { status: restoreStatus } }),
+        this.prisma.orderOpLog.create({ data: { orderId, action: 'refund_cancel_buyer', adminId: userId } }),
+      ])
+      return { ok: true, status: restoreStatus }
+    }
+    if (existingRefund.status !== 'requested') {
+      throw new BadRequestException('当前状态不可取消退款申请')
+    }
+
+    const restoreStatus = order.shippedAt ? 'shipped' : 'paid'
+    await this.prisma.$transaction([
+      this.prisma.orderRefund.delete({ where: { orderId } }),
+      this.prisma.order.update({ where: { id: orderId }, data: { status: restoreStatus } }),
+      this.prisma.orderOpLog.create({ data: { orderId, action: 'refund_cancel_buyer', adminId: userId } }),
+    ])
+    return { ok: true, status: restoreStatus }
+  }
+
+  /**
+   * 发布者处理售后意见：只写 opLog，不改 Order/OrderRefund 状态
+   * 仅 seller 可操作，且 order.status=refund_requested、refund.status=requested
+   */
+  async afterSaleSellerDecision(
+    userId: string,
+    orderId: string,
+    body: { decision?: string; reason?: string; returnAddress?: { name?: string; phone?: string; fullText?: string } },
+  ) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: { refund: true },
+    })
+    if (!order) throw new NotFoundException('订单不存在')
+    if (order.sellerId !== userId) {
+      throw new ForbiddenException('无权限操作此订单')
+    }
+    if (order.status !== 'refund_requested') {
+      throw new BadRequestException('仅退款申请中的订单可提交处理意见')
+    }
+    if (!order.refund || order.refund.status !== 'requested') {
+      throw new BadRequestException('当前状态不可提交处理意见')
+    }
+
+    const decision = body.decision as string
+    const allowed = ['agree_return', 'agree_refund', 'reject']
+    if (!decision || !allowed.includes(decision)) {
+      throw new BadRequestException('无效的 decision')
+    }
+    if (decision === 'reject' && !String(body.reason || '').trim()) {
+      throw new BadRequestException('拒绝时请填写原因')
+    }
+
+    const payload = {
+      decision,
+      reason: body.reason?.trim() || null,
+      returnAddress: body.returnAddress || null,
+      decidedAt: new Date().toISOString(),
+    }
+
+    await this.prisma.orderOpLog.create({
+      data: {
+        orderId,
+        action: 'after_sale_seller_decision',
+        payloadJson: payload as any,
+        adminId: null,
+      },
+    })
+    return { ok: true }
   }
 }
