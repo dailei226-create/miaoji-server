@@ -87,14 +87,73 @@ let PayController = class PayController {
                 trade_state: payResult?.trade_state,
                 amount: payResult?.amount,
             });
-            if (payResult?.out_trade_no) {
-                const data = { status: 'paid', paidAt: new Date() };
-                if (payResult?.transaction_id) {
-                    data.transactionId = String(payResult.transaction_id);
-                }
-                await this.prisma.order.updateMany({
-                    where: { orderNo: String(payResult.out_trade_no) },
-                    data,
+            const outTradeNo = payResult?.out_trade_no ? String(payResult.out_trade_no) : '';
+            const tradeState = payResult?.trade_state ? String(payResult.trade_state) : '';
+            const wxAmountTotal = payResult?.amount?.total;
+            if (!outTradeNo) {
+                console.error('[pay/notify] missing out_trade_no');
+                return res.status(200).json({ code: 'SUCCESS', message: '成功' });
+            }
+            if (tradeState !== 'SUCCESS') {
+                console.log('[pay/notify] trade_state not SUCCESS, skip update:', { outTradeNo, tradeState });
+                return res.status(200).json({ code: 'SUCCESS', message: '成功' });
+            }
+            const order = await this.prisma.order.findFirst({ where: { orderNo: outTradeNo } });
+            if (!order) {
+                console.error('[pay/notify] order not found for out_trade_no:', outTradeNo);
+                return res.status(200).json({ code: 'SUCCESS', message: '成功' });
+            }
+            const alreadyHandledStatuses = new Set([
+                'paid',
+                'paid_mock',
+                'shipped',
+                'received',
+                'completed',
+                'refund_requested',
+                'refund_approved',
+                'refund_rejected',
+                'refunded',
+            ]);
+            if (alreadyHandledStatuses.has(String(order.status))) {
+                console.log('[pay/notify] already handled, skip update:', {
+                    orderId: order.id,
+                    orderNo: order.orderNo,
+                    status: order.status,
+                });
+                return res.status(200).json({ code: 'SUCCESS', message: '成功' });
+            }
+            const wxTotalFen = Number(wxAmountTotal);
+            const dbTotalFen = Number(order.amount);
+            if (!Number.isFinite(wxTotalFen) || wxTotalFen <= 0) {
+                console.error('[pay/notify] invalid wx amount.total, skip update:', { outTradeNo, wxAmountTotal });
+                return res.status(200).json({ code: 'SUCCESS', message: '成功' });
+            }
+            if (!Number.isFinite(dbTotalFen) || dbTotalFen <= 0) {
+                console.error('[pay/notify] invalid db order.amount, skip update:', { orderId: order.id, dbTotalFen });
+                return res.status(200).json({ code: 'SUCCESS', message: '成功' });
+            }
+            if (wxTotalFen !== dbTotalFen) {
+                console.error('[pay/notify] amount mismatch, skip update:', {
+                    orderId: order.id,
+                    orderNo: order.orderNo,
+                    dbTotalFen,
+                    wxTotalFen,
+                    transaction_id: payResult?.transaction_id,
+                });
+                return res.status(200).json({ code: 'SUCCESS', message: '成功' });
+            }
+            const data = { status: 'paid', paidAt: new Date() };
+            if (payResult?.transaction_id)
+                data.transactionId = String(payResult.transaction_id);
+            const upd = await this.prisma.order.updateMany({
+                where: { id: order.id, status: 'created' },
+                data,
+            });
+            if (upd.count !== 1) {
+                console.log('[pay/notify] updateMany count!=1 (probably concurrent), skip:', {
+                    orderId: order.id,
+                    status: order.status,
+                    count: upd.count,
                 });
             }
             return res.status(200).json({ code: 'SUCCESS', message: '成功' });

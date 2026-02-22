@@ -15,7 +15,9 @@ import { ConfigModule } from './modules/config/config.module';
 import { CreatorsModule } from './modules/creators/creators.module';
 import { UploadModule } from './modules/upload/upload.module';
 import { SupportModule } from './modules/support/support.module';
+import { CreatorAgreementModule } from './modules/creator-agreement/creator-agreement.module';
 import { HealthController } from './health.controller';
+import { TimeController } from './time.controller';
 
 @Module({
   imports: [
@@ -35,8 +37,9 @@ import { HealthController } from './health.controller';
     CategoriesModule,
     ConfigModule,
     SupportModule,
+    CreatorAgreementModule,
   ],
-  controllers: [HealthController],
+  controllers: [HealthController, TimeController],
 })
 export class AppModule {}
 

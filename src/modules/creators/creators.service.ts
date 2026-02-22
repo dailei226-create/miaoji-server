@@ -75,6 +75,12 @@ export class CreatorsService {
     });
 
     try {
+      // IMPORTANT: Store UTC instants into MySQL DATETIME via parameter binding.
+      // If we use NOW() here, MySQL will write "local wall time" (SYSTEM tz) into DATETIME,
+      // but Prisma/JSON serialization will later treat it as UTC and append "Z",
+      // causing admin-web to shift it +8 again.
+      const now = new Date();
+
       // 查询是否已有记录
       const existing: any[] = await this.prisma.$queryRaw(Prisma.sql`
         SELECT id, status FROM CreatorProfile WHERE userId = ${userId} LIMIT 1
@@ -98,9 +104,9 @@ export class CreatorsService {
         await this.prisma.$executeRaw(Prisma.sql`
           UPDATE CreatorProfile 
           SET status = 'pending', reason = NULL, 
-              applyData = ${applyData}, appliedAt = NOW(), 
+              applyData = ${applyData}, appliedAt = ${now}, 
               phone = ${body.phone || null}, realName = ${body.realName || null},
-              updatedAt = NOW()
+              updatedAt = ${now}
           WHERE userId = ${userId}
         `);
 
@@ -114,7 +120,7 @@ export class CreatorsService {
       const newId = `cp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       await this.prisma.$executeRaw(Prisma.sql`
         INSERT INTO CreatorProfile (id, userId, status, applyData, appliedAt, phone, realName, createdAt, updatedAt)
-        VALUES (${newId}, ${userId}, 'pending', ${applyData}, NOW(), ${body.phone || null}, ${body.realName || null}, NOW(), NOW())
+        VALUES (${newId}, ${userId}, 'pending', ${applyData}, ${now}, ${body.phone || null}, ${body.realName || null}, ${now}, ${now})
       `);
 
       // 写操作日志
@@ -207,7 +213,7 @@ export class CreatorsService {
     try {
       await this.prisma.$executeRaw(Prisma.sql`
         INSERT INTO CreatorOpLog (id, creatorProfileId, action, fromStatus, toStatus, reason, adminId, createdAt)
-        VALUES (${`col_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`}, ${creatorProfileId}, ${action}, ${fromStatus}, ${toStatus}, ${reason}, ${adminId}, NOW())
+        VALUES (${`col_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`}, ${creatorProfileId}, ${action}, ${fromStatus}, ${toStatus}, ${reason}, ${adminId}, UTC_TIMESTAMP(3))
       `);
     } catch (e) {
       console.error('[writeOpLog] error:', e);
@@ -218,7 +224,7 @@ export class CreatorsService {
     try {
       await this.prisma.$executeRaw(Prisma.sql`
         INSERT INTO Notice (userId, type, title, content, isRead, createdAt)
-        VALUES (${userId}, ${type}, ${title}, ${content}, 0, NOW())
+        VALUES (${userId}, ${type}, ${title}, ${content}, 0, UTC_TIMESTAMP(3))
       `);
     } catch (e) {
       console.error('[sendNotice] error:', e);
@@ -238,7 +244,7 @@ export class CreatorsService {
     const fromStatus = profile.status;
 
     await this.prisma.$executeRaw(Prisma.sql`
-      UPDATE CreatorProfile SET status = 'approved', reason = NULL, updatedAt = NOW() WHERE userId = ${userId}
+      UPDATE CreatorProfile SET status = 'approved', reason = NULL, updatedAt = UTC_TIMESTAMP(3) WHERE userId = ${userId}
     `);
     // 注：User 表无 role 字段，创作者身份通过 CreatorProfile.status=approved 判断
 
@@ -263,7 +269,7 @@ export class CreatorsService {
     const fromStatus = profile.status;
 
     await this.prisma.$executeRaw(Prisma.sql`
-      UPDATE CreatorProfile SET status = 'rejected', reason = ${reason || null}, updatedAt = NOW() WHERE userId = ${userId}
+      UPDATE CreatorProfile SET status = 'rejected', reason = ${reason || null}, updatedAt = UTC_TIMESTAMP(3) WHERE userId = ${userId}
     `);
 
     await this.writeOpLog(profile.id, 'reject', fromStatus, 'rejected', reason || null, adminId || null);
@@ -310,12 +316,12 @@ export class CreatorsService {
       UPDATE CreatorProfile 
       SET status = 'frozen', 
           reason = ${reason}, 
-          frozenAt = NOW(), 
+          frozenAt = UTC_TIMESTAMP(3), 
           frozenUntil = ${frozenUntil}, 
           frozenBy = ${adminId || null},
           unfrozenAt = NULL,
           unfrozenBy = NULL,
-          updatedAt = NOW() 
+          updatedAt = UTC_TIMESTAMP(3) 
       WHERE userId = ${userId}
     `);
 
@@ -363,7 +369,7 @@ export class CreatorsService {
 
     // 更新状态、原因、封禁时间
     await this.prisma.$executeRaw(Prisma.sql`
-      UPDATE CreatorProfile SET status = 'banned', reason = ${reason || null}, frozenAt = NOW(), updatedAt = NOW() WHERE userId = ${userId}
+      UPDATE CreatorProfile SET status = 'banned', reason = ${reason || null}, frozenAt = UTC_TIMESTAMP(3), updatedAt = UTC_TIMESTAMP(3) WHERE userId = ${userId}
     `);
 
     await this.writeOpLog(profile.id, 'ban', fromStatus, 'banned', reason || null, adminId || null);
@@ -398,9 +404,9 @@ export class CreatorsService {
     await this.prisma.$executeRaw(Prisma.sql`
       UPDATE CreatorProfile 
       SET status = 'approved', 
-          unfrozenAt = NOW(), 
+          unfrozenAt = UTC_TIMESTAMP(3), 
           unfrozenBy = ${adminId || (isAutoUnfreeze ? 'system' : null)},
-          updatedAt = NOW() 
+          updatedAt = UTC_TIMESTAMP(3) 
       WHERE userId = ${userId}
     `);
 

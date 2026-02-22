@@ -15,6 +15,7 @@ const client_1 = require("@prisma/client");
 const prisma_service_1 = require("../prisma/prisma.service");
 const creators_service_1 = require("../creators/creators.service");
 const crypto_1 = require("crypto");
+const display_no_1 = require("../../utils/display-no");
 let OrdersService = class OrdersService {
     constructor(prisma, creators) {
         this.prisma = prisma;
@@ -72,6 +73,24 @@ let OrdersService = class OrdersService {
         }
         return null;
     }
+    getAfterSaleSellerDecision(opLogs) {
+        if (!opLogs || !Array.isArray(opLogs))
+            return null;
+        const logs = opLogs.filter((l) => l.action === 'after_sale_seller_decision');
+        if (logs.length === 0)
+            return null;
+        const latest = logs.reduce((a, b) => (a.createdAt > b.createdAt ? a : b));
+        const p = latest.payloadJson;
+        if (!p)
+            return null;
+        return {
+            decision: p.decision || null,
+            reason: p.reason ?? null,
+            returnAddress: p.returnAddress ?? null,
+            decidedAt: p.decidedAt ?? null,
+            opCreatedAt: latest.createdAt ? new Date(latest.createdAt).toISOString() : null,
+        };
+    }
     sanitizeItems(items) {
         return (items || []).map((item) => {
             let cover = item.coverSnap || '';
@@ -85,6 +104,31 @@ let OrdersService = class OrdersService {
             }
             return { ...item, coverSnap: cover };
         });
+    }
+    mapOrderShape(order) {
+        const refundNo = order?.refund?.displayNo || order?.refund?.refundNo || order?.refund?.no || order?.refund?.id || null;
+        const requestNote = String(order?.refund?.requestNote || '').toLowerCase();
+        const refundType = requestNote === 'return_refund' ? 'RETURN_REFUND' : 'ONLY_REFUND';
+        const refund = order?.refund
+            ? {
+                ...order.refund,
+                displayNo: order.refund.displayNo || refundNo || null,
+                type: order.refund.type || refundType,
+                refundNo,
+                afterSaleNo: refundNo,
+                aftersaleNo: refundNo,
+            }
+            : order?.refund;
+        return {
+            ...order,
+            displayNo: order?.displayNo || null,
+            orderDisplayNo: order?.displayNo || order?.orderNo || null,
+            refundDisplayNo: refundNo,
+            afterSaleDisplayNo: refundNo,
+            refund,
+            afterSaleNo: refundNo,
+            aftersaleNo: refundNo,
+        };
     }
     async create(userId, dto) {
         const workId = dto.workId;
@@ -108,6 +152,7 @@ let OrdersService = class OrdersService {
                 throw new common_1.BadRequestException(sellerCheck.message || '卖家不可接单');
             }
         }
+        const displayNo = await (0, display_no_1.createUniqueOrderDisplayNo)(this.prisma);
         return this.prisma.$transaction(async (tx) => {
             const work = await tx.work.findUnique({
                 where: { id: workId },
@@ -130,6 +175,7 @@ let OrdersService = class OrdersService {
                     : {};
             const order = await tx.order.create({
                 data: {
+                    displayNo,
                     orderNo,
                     buyerId: userId,
                     sellerId,
@@ -213,18 +259,33 @@ let OrdersService = class OrdersService {
         });
     }
     async listBuyer(userId) {
+        console.log('[listBuyer] userId =', userId);
         const items = await this.prisma.order.findMany({
             where: { buyerId: userId },
             orderBy: { createdAt: 'desc' },
-            include: { items: true },
+            include: { items: true, refund: true },
         });
+        console.log('[listBuyer] found', items.length, 'orders');
+        const orderIds = items.map((x) => x.id);
+        const applyCountMap = {};
+        if (orderIds.length > 0) {
+            const groups = await this.prisma.orderOpLog.groupBy({
+                by: ['orderId'],
+                where: { orderId: { in: orderIds }, action: 'refund_request_buyer' },
+                _count: { _all: true },
+            });
+            for (const g of groups) {
+                applyCountMap[g.orderId] = g._count._all;
+            }
+        }
         return {
             items: items.map((order) => ({
-                ...order,
+                ...this.mapOrderShape(order),
                 items: this.sanitizeItems(order.items),
                 canPay: order.status === 'created',
                 payable: order.status === 'created',
                 totalAmount: order.amount,
+                refundApplyCount: applyCountMap[order.id] || 0,
             })),
         };
     }
@@ -232,11 +293,11 @@ let OrdersService = class OrdersService {
         const items = await this.prisma.order.findMany({
             where: { OR: [{ buyerId: userId }, { sellerId: userId }] },
             orderBy: { createdAt: 'desc' },
-            include: { items: true },
+            include: { items: true, refund: true },
         });
         return {
             items: items.map((order) => ({
-                ...order,
+                ...this.mapOrderShape(order),
                 items: this.sanitizeItems(order.items),
                 canPay: order.status === 'created',
                 payable: order.status === 'created',
@@ -254,22 +315,26 @@ let OrdersService = class OrdersService {
         const items = await this.prisma.order.findMany({
             where,
             orderBy: { createdAt: 'desc' },
-            include: { items: true },
+            include: { items: true, refund: true, opLogs: { orderBy: { createdAt: 'desc' } } },
         });
         return {
-            items: items.map((order) => ({
-                ...order,
-                items: this.sanitizeItems(order.items),
-                canPay: order.status === 'created',
-                payable: order.status === 'created',
-                totalAmount: order.amount,
-            })),
+            items: items.map((order) => {
+                const afterSaleSellerDecision = this.getAfterSaleSellerDecision(order.opLogs);
+                return {
+                    ...this.mapOrderShape(order),
+                    items: this.sanitizeItems(order.items),
+                    canPay: order.status === 'created',
+                    payable: order.status === 'created',
+                    totalAmount: order.amount,
+                    afterSaleSellerDecision,
+                };
+            }),
         };
     }
     async detail(userId, id) {
         const order = await this.prisma.order.findUnique({
             where: { id },
-            include: { items: true },
+            include: { items: true, refund: true, opLogs: { orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] } },
         });
         if (!order)
             throw new common_1.NotFoundException('订单不存在');
@@ -277,12 +342,14 @@ let OrdersService = class OrdersService {
             throw new common_1.ForbiddenException('无权限');
         }
         const canPay = order.status === 'created';
+        const afterSaleSellerDecision = this.getAfterSaleSellerDecision(order.opLogs);
         return {
-            ...order,
+            ...this.mapOrderShape(order),
             items: this.sanitizeItems(order.items),
             canPay,
             payable: canPay,
             totalAmount: order.amount,
+            afterSaleSellerDecision,
         };
     }
     async markShipped(userId, orderId, expressCompany, expressNo) {
@@ -325,13 +392,29 @@ let OrdersService = class OrdersService {
         if (status && status !== 'all') {
             where.status = status;
         }
-        if (q) {
-            where.OR = [
-                { orderNo: { contains: q } },
-                { buyerId: { contains: q } },
-            ];
+        const qTrim = String(q || '').trim();
+        if (qTrim) {
+            const isNumericDisplayNo = /^\d{10,}$/.test(qTrim);
+            if (isNumericDisplayNo) {
+                where.OR = [
+                    { displayNo: qTrim },
+                    { refund: { is: { displayNo: qTrim } } },
+                    { buyer: { is: { displayNo: qTrim } } },
+                    { orderNo: { contains: qTrim } },
+                    { id: { contains: qTrim } },
+                    { buyerId: { contains: qTrim } },
+                ];
+            }
+            else {
+                where.OR = [
+                    { orderNo: { contains: qTrim } },
+                    { id: { contains: qTrim } },
+                    { buyerId: { contains: qTrim } },
+                    { displayNo: { contains: qTrim } },
+                ];
+            }
         }
-        const [items, total] = await Promise.all([
+        const [rows, total] = await Promise.all([
             this.prisma.order.findMany({
                 where,
                 orderBy: { createdAt: 'desc' },
@@ -341,6 +424,10 @@ let OrdersService = class OrdersService {
             }),
             this.prisma.order.count({ where }),
         ]);
+        const items = rows.map((order) => ({
+            ...this.mapOrderShape(order),
+            afterSaleSellerDecision: this.getAfterSaleSellerDecision(order.opLogs),
+        }));
         return { items, total, page, pageSize };
     }
     async adminDetail(orderId) {
@@ -349,14 +436,17 @@ let OrdersService = class OrdersService {
             include: {
                 items: true,
                 refund: true,
-                opLogs: { orderBy: { createdAt: 'desc' } },
-                buyer: { select: { id: true, nickname: true, openId: true } },
-                seller: { select: { id: true, nickname: true, openId: true } },
+                opLogs: { orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] },
+                buyer: { select: { id: true, displayNo: true, nickname: true, openId: true } },
+                seller: { select: { id: true, displayNo: true, nickname: true, openId: true } },
             },
         });
         if (!order)
             throw new common_1.NotFoundException('订单不存在');
-        return order;
+        return {
+            ...this.mapOrderShape(order),
+            afterSaleSellerDecision: this.getAfterSaleSellerDecision(order.opLogs),
+        };
     }
     async writeOpLog(orderId, action, payload, adminId) {
         await this.prisma.orderOpLog.create({
@@ -405,8 +495,8 @@ let OrdersService = class OrdersService {
         const order = await this.prisma.order.findUnique({ where: { id: orderId } });
         if (!order)
             throw new common_1.NotFoundException('订单不存在');
-        if (order.status !== 'shipped') {
-            throw new common_1.BadRequestException('仅已发货订单可完成');
+        if (order.status !== 'received') {
+            throw new common_1.BadRequestException('仅已收货订单可完成');
         }
         const updated = await this.prisma.order.update({
             where: { id: orderId },
@@ -428,6 +518,7 @@ let OrdersService = class OrdersService {
         if (order.refund) {
             throw new common_1.BadRequestException('已存在退款申请');
         }
+        const forcedRefundType = order.shippedAt ? 'return_refund' : 'refund';
         await this.prisma.$transaction([
             this.prisma.order.update({
                 where: { id: orderId },
@@ -435,14 +526,15 @@ let OrdersService = class OrdersService {
             }),
             this.prisma.orderRefund.create({
                 data: {
+                    displayNo: await (0, display_no_1.createUniqueRefundDisplayNo)(this.prisma),
                     orderId,
                     status: 'requested',
                     reason: data.reason || null,
-                    requestNote: data.note || null,
+                    requestNote: forcedRefundType,
                 },
             }),
         ]);
-        await this.writeOpLog(orderId, 'refund_request', data, adminId);
+        await this.writeOpLog(orderId, 'refund_request', { ...data, type: forcedRefundType }, adminId);
         return this.adminDetail(orderId);
     }
     async adminRefundApprove(orderId, note, adminId) {
@@ -516,45 +608,88 @@ let OrdersService = class OrdersService {
             throw new common_1.NotFoundException('订单不存在');
         if (order.buyerId !== userId)
             throw new common_1.BadRequestException('无权操作此订单');
-        if (order.status !== 'shipped') {
-            throw new common_1.BadRequestException('仅已发货订单可确认收货');
+        if (order.status === 'received' || order.status === 'completed') {
+            return { ok: true, status: order.status };
         }
-        const updated = await this.prisma.order.update({
-            where: { id: orderId },
-            data: {
-                status: 'received',
-                receivedAt: new Date(),
-            },
+        if (order.status !== 'shipped') {
+            throw new common_1.BadRequestException('订单状态不允许确认收货');
+        }
+        const now = new Date();
+        const updated = await this.prisma.$transaction(async (tx) => {
+            const step1 = await tx.order.updateMany({
+                where: { id: orderId, status: 'shipped' },
+                data: { status: 'received', receivedAt: now },
+            });
+            if (step1.count === 0) {
+                const latest = await tx.order.findUnique({ where: { id: orderId } });
+                if (!latest)
+                    throw new common_1.NotFoundException('订单不存在');
+                if (latest && (latest.status === 'received' || latest.status === 'completed')) {
+                    return latest;
+                }
+                throw new common_1.BadRequestException('订单状态不允许确认收货');
+            }
+            await tx.order.updateMany({
+                where: { id: orderId, status: 'received' },
+                data: { status: 'completed', completedAt: now },
+            });
+            const latest = await tx.order.findUnique({ where: { id: orderId } });
+            if (!latest)
+                throw new common_1.NotFoundException('订单不存在');
+            return latest;
         });
         await this.writeOpLog(orderId, 'confirm_receipt', {}, userId);
         return { ok: true, status: updated.status };
     }
-    async requestRefund(userId, orderId, reason, type) {
+    async requestRefund(userId, orderId, reason, type, action) {
         const order = await this.prisma.order.findUnique({ where: { id: orderId } });
         if (!order)
             throw new common_1.NotFoundException('订单不存在');
         if (order.buyerId !== userId)
             throw new common_1.BadRequestException('无权操作此订单');
-        const refundType = type || 'refund';
-        if (refundType === 'refund') {
-            if (order.status !== 'paid' && order.status !== 'paid_mock') {
-                throw new common_1.BadRequestException('仅已付款且未发货订单可申请退款');
-            }
-        }
-        else {
-            if (order.status !== 'shipped') {
-                throw new common_1.BadRequestException('仅已发货订单可申请退货退款');
-            }
+        const opAction = (action || '');
+        if (opAction && opAction !== 'modify') {
+            throw new common_1.BadRequestException('invalid_action');
         }
         const existingRefund = await this.prisma.orderRefund.findUnique({ where: { orderId } });
-        if (existingRefund && existingRefund.status !== 'rejected') {
-            throw new common_1.BadRequestException('已有退款申请，请勿重复提交');
+        if (order.status === 'refund_requested' && !opAction) {
+            throw new common_1.BadRequestException('已提交申请，如需修改请使用 modify');
+        }
+        const refundType = (order.shippedAt ? 'return_refund' : 'refund');
+        if (opAction === 'modify') {
+            if (!existingRefund)
+                throw new common_1.BadRequestException('退款申请不存在');
+            if (order.status !== 'refund_requested' || existingRefund.status !== 'requested') {
+                throw new common_1.BadRequestException('当前状态不可修改退款申请');
+            }
+            await this.prisma.orderRefund.update({
+                where: { orderId },
+                data: {
+                    reason: reason || null,
+                    requestNote: refundType,
+                },
+            });
+            await this.writeOpLog(orderId, 'refund_modify_buyer', { reason, type: refundType }, userId);
+            return { ok: true, status: 'refund_requested' };
+        }
+        const allowedApplyStatuses = new Set(['paid', 'paid_mock', 'shipped']);
+        if (order.status !== 'refund_rejected' && !allowedApplyStatuses.has(String(order.status))) {
+            throw new common_1.BadRequestException('订单状态不允许申请退款');
+        }
+        const applyCount = await this.prisma.orderOpLog.count({
+            where: { orderId, action: 'refund_request_buyer' },
+        });
+        if (applyCount >= 2 && order.status === 'refund_rejected') {
+            throw new common_1.BadRequestException('退款申请次数已达上限');
+        }
+        if (applyCount >= 2 && existingRefund && existingRefund.status === 'rejected') {
+            throw new common_1.BadRequestException('退款申请次数已达上限');
         }
         if (existingRefund) {
             await this.prisma.orderRefund.update({
                 where: { orderId },
                 data: {
-                    status: 'pending',
+                    status: 'requested',
                     reason: reason || null,
                     requestNote: refundType,
                     decidedAt: null,
@@ -565,8 +700,9 @@ let OrdersService = class OrdersService {
         else {
             await this.prisma.orderRefund.create({
                 data: {
+                    displayNo: await (0, display_no_1.createUniqueRefundDisplayNo)(this.prisma),
                     orderId,
-                    status: 'pending',
+                    status: 'requested',
                     reason: reason || null,
                     requestNote: refundType,
                 },
@@ -578,6 +714,75 @@ let OrdersService = class OrdersService {
         });
         await this.writeOpLog(orderId, 'refund_request_buyer', { reason, type: refundType }, userId);
         return { ok: true, status: 'refund_requested' };
+    }
+    async cancelRefund(userId, orderId) {
+        const order = await this.prisma.order.findUnique({ where: { id: orderId } });
+        if (!order)
+            throw new common_1.NotFoundException('订单不存在');
+        if (order.buyerId !== userId)
+            throw new common_1.BadRequestException('无权操作此订单');
+        if (order.status !== 'refund_requested') {
+            throw new common_1.BadRequestException('仅退款申请中的订单可取消申请');
+        }
+        const existingRefund = await this.prisma.orderRefund.findUnique({ where: { orderId } });
+        if (!existingRefund) {
+            const restoreStatus = order.shippedAt ? 'shipped' : 'paid';
+            await this.prisma.$transaction([
+                this.prisma.order.update({ where: { id: orderId }, data: { status: restoreStatus } }),
+                this.prisma.orderOpLog.create({ data: { orderId, action: 'refund_cancel_buyer', adminId: userId } }),
+            ]);
+            return { ok: true, status: restoreStatus };
+        }
+        if (existingRefund.status !== 'requested') {
+            throw new common_1.BadRequestException('当前状态不可取消退款申请');
+        }
+        const restoreStatus = order.shippedAt ? 'shipped' : 'paid';
+        await this.prisma.$transaction([
+            this.prisma.orderRefund.delete({ where: { orderId } }),
+            this.prisma.order.update({ where: { id: orderId }, data: { status: restoreStatus } }),
+            this.prisma.orderOpLog.create({ data: { orderId, action: 'refund_cancel_buyer', adminId: userId } }),
+        ]);
+        return { ok: true, status: restoreStatus };
+    }
+    async afterSaleSellerDecision(userId, orderId, body) {
+        const order = await this.prisma.order.findUnique({
+            where: { id: orderId },
+            include: { refund: true },
+        });
+        if (!order)
+            throw new common_1.NotFoundException('订单不存在');
+        if (order.sellerId !== userId) {
+            throw new common_1.ForbiddenException('无权限操作此订单');
+        }
+        if (order.status !== 'refund_requested') {
+            throw new common_1.BadRequestException('仅退款申请中的订单可提交处理意见');
+        }
+        if (!order.refund || order.refund.status !== 'requested') {
+            throw new common_1.BadRequestException('当前状态不可提交处理意见');
+        }
+        const decision = body.decision;
+        const allowed = ['agree_return', 'agree_refund', 'reject'];
+        if (!decision || !allowed.includes(decision)) {
+            throw new common_1.BadRequestException('无效的 decision');
+        }
+        if (decision === 'reject' && !String(body.reason || '').trim()) {
+            throw new common_1.BadRequestException('拒绝时请填写原因');
+        }
+        const payload = {
+            decision,
+            reason: body.reason?.trim() || null,
+            returnAddress: body.returnAddress || null,
+            decidedAt: new Date().toISOString(),
+        };
+        await this.prisma.orderOpLog.create({
+            data: {
+                orderId,
+                action: 'after_sale_seller_decision',
+                payloadJson: payload,
+                adminId: null,
+            },
+        });
+        return { ok: true };
     }
 };
 exports.OrdersService = OrdersService;

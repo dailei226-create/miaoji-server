@@ -9,7 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MockLoginDto = void 0;
+exports.LoginDto = exports.MockLoginDto = void 0;
 const class_validator_1 = require("class-validator");
 class MockLoginDto {
 }
@@ -30,4 +30,18 @@ __decorate([
     (0, class_validator_1.IsIn)(['buyer', 'creator', 'admin']),
     __metadata("design:type", String)
 ], MockLoginDto.prototype, "role", void 0);
+class LoginDto {
+}
+exports.LoginDto = LoginDto;
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(256),
+    __metadata("design:type", String)
+], LoginDto.prototype, "code", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(64),
+    __metadata("design:type", String)
+], LoginDto.prototype, "nickname", void 0);
 //# sourceMappingURL=dto.js.map

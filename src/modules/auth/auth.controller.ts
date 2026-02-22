@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Post, Req, UseGuards, ForbiddenException } from '@nestjs/common';
 import { AuthService } from './auth.service';
-import { MockLoginDto } from './dto';
+import { MockLoginDto, LoginDto } from './dto';
 import { Request } from 'express';
 import { JwtAuthGuard } from './jwt.guard';
 import { Role } from './roles.decorator';
@@ -24,6 +24,15 @@ const isRole = (value: string | undefined): value is Role => {
 @Controller('auth')
 export class AuthController {
   constructor(private auth: AuthService) {}
+
+  /**
+   * 真实登录接口
+   * 接收小程序 wx.login 返回的 code，换取 openid 后签发 JWT
+   */
+  @Post('login')
+  async login(@Body() dto: LoginDto) {
+    return this.auth.login({ code: dto.code, nickname: dto.nickname });
+  }
 
   @Post('mock-login')
   async mockLogin(@Body() dto: MockLoginDto) {

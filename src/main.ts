@@ -1,5 +1,10 @@
+// Force Node process timezone to UTC for consistent Date behavior.
+// Must be set before any modules rely on Date formatting/parsing.
+process.env.TZ = 'UTC';
+
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { ValidationPipe } from '@nestjs/common';
 import * as bodyParser from 'body-parser';
 import { join } from 'path';
 import * as fs from 'fs';
@@ -7,6 +12,14 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // Enable DTO validation/transform globally (safe, does not touch payment logic).
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+    }),
+  );
 
   const uploadsDir = join(process.cwd(), 'uploads');
   try {

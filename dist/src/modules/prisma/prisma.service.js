@@ -12,6 +12,7 @@ const client_1 = require("@prisma/client");
 let PrismaService = class PrismaService extends client_1.PrismaClient {
     async onModuleInit() {
         await this.$connect();
+        await this.$executeRawUnsafe(`SET time_zone = '+00:00'`);
     }
     async enableShutdownHooks(app) {
     }

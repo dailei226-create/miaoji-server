@@ -16,6 +16,26 @@ let BannersService = class BannersService {
     constructor(prisma) {
         this.prisma = prisma;
     }
+    assertTargetValid(targetType, targetId, linkUrl) {
+        const t = String(targetType || '').trim();
+        const id = (targetId == null) ? '' : String(targetId).trim();
+        const url = (linkUrl == null) ? '' : String(linkUrl).trim();
+        const needsId = new Set(['CREATOR', 'AUTHOR', 'WORK', 'WORK_DETAIL', 'CATEGORY', 'CATEGORY_L1', 'CATEGORY_L2']);
+        if (t === 'H5') {
+            if (!url)
+                throw new common_1.BadRequestException('linkUrl_required_for_h5');
+            if (!/^https?:\/\//i.test(url))
+                throw new common_1.BadRequestException('linkUrl_invalid');
+            return;
+        }
+        if (t === 'NONE')
+            return;
+        if (needsId.has(t)) {
+            if (!id)
+                throw new common_1.BadRequestException('targetId_required');
+            return;
+        }
+    }
     async listPublic(position) {
         const where = { enabled: true };
         if (position)
@@ -43,13 +63,15 @@ let BannersService = class BannersService {
             throw new common_1.BadRequestException('position_required');
         if (!dto?.targetType)
             throw new common_1.BadRequestException('targetType_required');
+        this.assertTargetValid(dto.targetType, dto.targetId, dto.linkUrl);
         return this.prisma.banner.create({
             data: {
                 title: dto.title ?? null,
                 imageUrl: dto.imageUrl,
+                linkUrl: dto.linkUrl ? String(dto.linkUrl).trim() : null,
                 position: dto.position,
                 targetType: dto.targetType,
-                targetId: dto.targetId ?? null,
+                targetId: dto.targetId ? String(dto.targetId).trim() : null,
                 sortOrder: dto.sortOrder ?? 0,
                 enabled: dto.enabled ?? true,
             },
@@ -61,17 +83,27 @@ let BannersService = class BannersService {
             throw new common_1.NotFoundException('banner_not_found');
         if (dto.imageUrl === '')
             throw new common_1.BadRequestException('imageUrl_required');
+        const nextType = dto.targetType !== undefined ? dto.targetType : existing.targetType;
+        const nextId = dto.targetId !== undefined
+            ? (dto.targetId ? String(dto.targetId).trim() : '')
+            : (existing.targetId ? String(existing.targetId).trim() : '');
+        const nextUrl = dto.linkUrl !== undefined
+            ? (dto.linkUrl ? String(dto.linkUrl).trim() : '')
+            : (existing.linkUrl ? String(existing.linkUrl).trim() : '');
+        this.assertTargetValid(String(nextType || ''), nextId, nextUrl);
         const data = {};
         if (dto.title !== undefined)
             data.title = dto.title;
         if (dto.imageUrl !== undefined)
             data.imageUrl = dto.imageUrl;
+        if (dto.linkUrl !== undefined)
+            data.linkUrl = dto.linkUrl ? String(dto.linkUrl).trim() : null;
         if (dto.position !== undefined)
             data.position = dto.position;
         if (dto.targetType !== undefined)
             data.targetType = dto.targetType;
         if (dto.targetId !== undefined)
-            data.targetId = dto.targetId;
+            data.targetId = dto.targetId ? String(dto.targetId).trim() : null;
         if (dto.sortOrder !== undefined)
             data.sortOrder = dto.sortOrder;
         if (dto.enabled !== undefined)

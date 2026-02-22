@@ -517,7 +517,7 @@ export class WorksService {
     if (!existing) throw new NotFoundException('work_not_found');
     console.log('[works.submitReview] creatorId=', creatorId, 'userId=', userId, 'workId=', workId, 'workCreatorId=', existing.creatorId || '');
     await this.prisma.$executeRaw(Prisma.sql`
-      UPDATE Work SET status = 'reviewing', updatedAt = NOW() WHERE id = ${workId}
+      UPDATE Work SET status = 'reviewing', updatedAt = UTC_TIMESTAMP(3) WHERE id = ${workId}
     `);
     console.log(`[works] write creatorId=${creatorId} workId=${workId} status=reviewing`);
     return { id: workId, status: 'reviewing' };
@@ -810,5 +810,30 @@ export class WorksService {
     }
 
     return { ok: true, workId, status: 'offline', offlineAt: now.toISOString() };
+  }
+
+  /** 后台只读：作品详情（用于审核页/运营查看） */
+  async adminGet(workId: string) {
+    const id = String(workId || '').trim();
+    if (!id) throw new BadRequestException('workId_required');
+    const work: any = await this.prisma.work.findUnique({ where: { id } });
+    if (!work) throw new NotFoundException('work_not_found');
+
+    const creatorId = String(work.creatorId || '');
+    const creatorNameMap = await this.buildCreatorNameMap(creatorId ? [creatorId] : []);
+    const mapped: any = this.mapWorkOutput(work, creatorNameMap);
+
+    const coverUrl = mapped.coverUrl || work.coverUrl || '';
+    const images = coverUrl ? [coverUrl] : [];
+
+    return {
+      ...mapped,
+      // keep extra fields for admin detail view
+      desc: work.desc || '',
+      cover: coverUrl,
+      images,
+      createdAt: work.createdAt ? (work.createdAt instanceof Date ? work.createdAt.toISOString() : String(work.createdAt)) : null,
+      updatedAt: work.updatedAt ? (work.updatedAt instanceof Date ? work.updatedAt.toISOString() : String(work.updatedAt)) : null,
+    };
   }
 }

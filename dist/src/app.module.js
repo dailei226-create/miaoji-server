@@ -24,7 +24,9 @@ const config_module_1 = require("./modules/config/config.module");
 const creators_module_1 = require("./modules/creators/creators.module");
 const upload_module_1 = require("./modules/upload/upload.module");
 const support_module_1 = require("./modules/support/support.module");
+const creator_agreement_module_1 = require("./modules/creator-agreement/creator-agreement.module");
 const health_controller_1 = require("./health.controller");
+const time_controller_1 = require("./time.controller");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
@@ -47,8 +49,9 @@ exports.AppModule = AppModule = __decorate([
             categories_module_1.CategoriesModule,
             config_module_1.ConfigModule,
             support_module_1.SupportModule,
+            creator_agreement_module_1.CreatorAgreementModule,
         ],
-        controllers: [health_controller_1.HealthController],
+        controllers: [health_controller_1.HealthController, time_controller_1.TimeController],
     })
 ], AppModule);
 //# sourceMappingURL=app.module.js.map

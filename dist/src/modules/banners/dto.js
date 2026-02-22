@@ -9,15 +9,29 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.UpdateBannerDto = exports.CreateBannerDto = void 0;
+exports.UpdateBannerDto = exports.CreateBannerDto = exports.BANNER_TARGET_TYPES = exports.BANNER_POSITIONS = void 0;
+const class_transformer_1 = require("class-transformer");
 const class_validator_1 = require("class-validator");
+exports.BANNER_POSITIONS = ['HOME', 'ACTIVITY', 'MARKET'];
+exports.BANNER_TARGET_TYPES = [
+    'NONE',
+    'H5',
+    'CREATOR',
+    'WORK',
+    'CATEGORY',
+    'CATEGORY_L1',
+    'CATEGORY_L2',
+    'AUTHOR',
+    'WORK_DETAIL',
+    'TOPIC_NEW',
+];
 class CreateBannerDto {
 }
 exports.CreateBannerDto = CreateBannerDto;
 __decorate([
     (0, class_validator_1.IsOptional)(),
     (0, class_validator_1.IsString)(),
-    (0, class_validator_1.MaxLength)(191),
+    (0, class_validator_1.MaxLength)(255),
     __metadata("design:type", String)
 ], CreateBannerDto.prototype, "title", void 0);
 __decorate([
@@ -26,21 +40,31 @@ __decorate([
     __metadata("design:type", String)
 ], CreateBannerDto.prototype, "imageUrl", void 0);
 __decorate([
-    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsIn)(exports.BANNER_POSITIONS),
     __metadata("design:type", String)
 ], CreateBannerDto.prototype, "position", void 0);
 __decorate([
-    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsIn)(exports.BANNER_TARGET_TYPES),
     __metadata("design:type", String)
 ], CreateBannerDto.prototype, "targetType", void 0);
 __decorate([
     (0, class_validator_1.IsOptional)(),
-    (0, class_validator_1.IsInt)(),
-    __metadata("design:type", Number)
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", String)
 ], CreateBannerDto.prototype, "targetId", void 0);
 __decorate([
     (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(512),
+    (0, class_validator_1.ValidateIf)((o) => o.linkUrl !== undefined && o.linkUrl !== null && String(o.linkUrl).trim() !== ''),
+    (0, class_validator_1.IsUrl)({ require_protocol: true }),
+    __metadata("design:type", String)
+], CreateBannerDto.prototype, "linkUrl", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
     (0, class_validator_1.IsInt)(),
+    (0, class_transformer_1.Type)(() => Number),
     __metadata("design:type", Number)
 ], CreateBannerDto.prototype, "sortOrder", void 0);
 __decorate([
@@ -54,7 +78,7 @@ exports.UpdateBannerDto = UpdateBannerDto;
 __decorate([
     (0, class_validator_1.IsOptional)(),
     (0, class_validator_1.IsString)(),
-    (0, class_validator_1.MaxLength)(191),
+    (0, class_validator_1.MaxLength)(255),
     __metadata("design:type", String)
 ], UpdateBannerDto.prototype, "title", void 0);
 __decorate([
@@ -65,22 +89,32 @@ __decorate([
 ], UpdateBannerDto.prototype, "imageUrl", void 0);
 __decorate([
     (0, class_validator_1.IsOptional)(),
-    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsIn)(exports.BANNER_POSITIONS),
     __metadata("design:type", String)
 ], UpdateBannerDto.prototype, "position", void 0);
 __decorate([
     (0, class_validator_1.IsOptional)(),
-    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsIn)(exports.BANNER_TARGET_TYPES),
     __metadata("design:type", String)
 ], UpdateBannerDto.prototype, "targetType", void 0);
 __decorate([
     (0, class_validator_1.IsOptional)(),
-    (0, class_validator_1.IsInt)(),
-    __metadata("design:type", Number)
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", String)
 ], UpdateBannerDto.prototype, "targetId", void 0);
 __decorate([
     (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(512),
+    (0, class_validator_1.ValidateIf)((o) => o.linkUrl !== undefined && o.linkUrl !== null && String(o.linkUrl).trim() !== ''),
+    (0, class_validator_1.IsUrl)({ require_protocol: true }),
+    __metadata("design:type", String)
+], UpdateBannerDto.prototype, "linkUrl", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
     (0, class_validator_1.IsInt)(),
+    (0, class_transformer_1.Type)(() => Number),
     __metadata("design:type", Number)
 ], UpdateBannerDto.prototype, "sortOrder", void 0);
 __decorate([

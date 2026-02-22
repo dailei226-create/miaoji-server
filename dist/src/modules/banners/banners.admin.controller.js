@@ -27,19 +27,45 @@ let AdminBannersController = class AdminBannersController {
         return this.banners.listAdmin(position);
     }
     async create(dto) {
+        console.log('[admin.banners.create] dto=', {
+            title: dto?.title,
+            imageUrl: dto?.imageUrl,
+            position: dto?.position,
+            targetType: dto?.targetType,
+            targetId: dto?.targetId,
+            sortOrder: dto?.sortOrder,
+            enabled: dto?.enabled,
+            _types: {
+                targetId: typeof dto?.targetId,
+                sortOrder: typeof dto?.sortOrder,
+            },
+        });
         return this.banners.create(dto);
     }
     async update(id, dto) {
-        return this.banners.update(Number(id), dto);
+        console.log('[admin.banners.update] id=', id, 'dto=', {
+            title: dto?.title,
+            imageUrl: dto?.imageUrl,
+            position: dto?.position,
+            targetType: dto?.targetType,
+            targetId: dto?.targetId,
+            sortOrder: dto?.sortOrder,
+            enabled: dto?.enabled,
+            _types: {
+                targetId: typeof dto?.targetId,
+                sortOrder: typeof dto?.sortOrder,
+            },
+        });
+        return this.banners.update(id, dto);
     }
     async setEnabled(id, body) {
-        return this.banners.setEnabled(Number(id), body.enabled);
+        return this.banners.setEnabled(id, body.enabled);
     }
     async updateSort(id, body) {
-        return this.banners.updateSort(Number(id), body.sortOrder);
+        return this.banners.updateSort(id, body.sortOrder);
     }
     async remove(id) {
-        return this.banners.remove(Number(id));
+        return this.banners.remove(id);
     }
 };
 exports.AdminBannersController = AdminBannersController;

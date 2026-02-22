@@ -88,4 +88,10 @@ export class AdminWorksController {
     const adminId = (req as any).user?.sub || null;
     return this.works.adminOfflineWork(id, dto.reason, adminId);
   }
+
+  /** 获取作品详情（审核页查看用，只读） */
+  @Get(':id')
+  async detail(@Param('id') id: string) {
+    return this.works.adminGet(id);
+  }
 }

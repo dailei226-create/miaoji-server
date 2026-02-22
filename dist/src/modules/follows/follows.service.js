@@ -39,6 +39,7 @@ let FollowsService = class FollowsService {
         });
         const creators = items.map((item) => ({
             id: item.creator.id,
+            nickname: item.creator.nickname || null,
             createdAt: item.creator.createdAt,
         }));
         return { items: creators };

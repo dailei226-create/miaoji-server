@@ -20,30 +20,58 @@ export class AdminBannersController {
   /** 新增 Banner */
   @Post()
   async create(@Body() dto: CreateBannerDto) {
+    // TEMP LOG: help confirm "save failed" root-cause quickly (remove after verified).
+    console.log('[admin.banners.create] dto=', {
+      title: dto?.title,
+      imageUrl: dto?.imageUrl,
+      position: dto?.position,
+      targetType: dto?.targetType,
+      targetId: dto?.targetId,
+      sortOrder: dto?.sortOrder,
+      enabled: dto?.enabled,
+      _types: {
+        targetId: typeof (dto as any)?.targetId,
+        sortOrder: typeof (dto as any)?.sortOrder,
+      },
+    });
     return this.banners.create(dto);
   }
 
   /** 编辑 Banner */
   @Put(':id')
   async update(@Param('id') id: string, @Body() dto: UpdateBannerDto) {
-    return this.banners.update(Number(id), dto);
+    // TEMP LOG: confirm payload + id parsing.
+    console.log('[admin.banners.update] id=', id, 'dto=', {
+      title: dto?.title,
+      imageUrl: dto?.imageUrl,
+      position: dto?.position,
+      targetType: dto?.targetType,
+      targetId: dto?.targetId,
+      sortOrder: dto?.sortOrder,
+      enabled: dto?.enabled,
+      _types: {
+        targetId: typeof (dto as any)?.targetId,
+        sortOrder: typeof (dto as any)?.sortOrder,
+      },
+    });
+    return this.banners.update(id, dto);
   }
 
   /** 启用 / 停用 Banner */
   @Patch(':id/enabled')
   async setEnabled(@Param('id') id: string, @Body() body: { enabled: boolean }) {
-    return this.banners.setEnabled(Number(id), body.enabled);
+    return this.banners.setEnabled(id, body.enabled);
   }
 
   /** 更新排序 */
   @Patch(':id/sort')
   async updateSort(@Param('id') id: string, @Body() body: { sortOrder: number }) {
-    return this.banners.updateSort(Number(id), body.sortOrder);
+    return this.banners.updateSort(id, body.sortOrder);
   }
 
   /** 删除 Banner */
   @Delete(':id')
   async remove(@Param('id') id: string) {
-    return this.banners.remove(Number(id));
+    return this.banners.remove(id);
   }
 }

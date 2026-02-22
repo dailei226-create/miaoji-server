@@ -514,7 +514,7 @@ let WorksService = class WorksService {
             throw new common_1.NotFoundException('work_not_found');
         console.log('[works.submitReview] creatorId=', creatorId, 'userId=', userId, 'workId=', workId, 'workCreatorId=', existing.creatorId || '');
         await this.prisma.$executeRaw(client_1.Prisma.sql `
-      UPDATE Work SET status = 'reviewing', updatedAt = NOW() WHERE id = ${workId}
+      UPDATE Work SET status = 'reviewing', updatedAt = UTC_TIMESTAMP(3) WHERE id = ${workId}
     `);
         console.log(`[works] write creatorId=${creatorId} workId=${workId} status=reviewing`);
         return { id: workId, status: 'reviewing' };
@@ -769,6 +769,27 @@ let WorksService = class WorksService {
             });
         }
         return { ok: true, workId, status: 'offline', offlineAt: now.toISOString() };
+    }
+    async adminGet(workId) {
+        const id = String(workId || '').trim();
+        if (!id)
+            throw new common_1.BadRequestException('workId_required');
+        const work = await this.prisma.work.findUnique({ where: { id } });
+        if (!work)
+            throw new common_1.NotFoundException('work_not_found');
+        const creatorId = String(work.creatorId || '');
+        const creatorNameMap = await this.buildCreatorNameMap(creatorId ? [creatorId] : []);
+        const mapped = this.mapWorkOutput(work, creatorNameMap);
+        const coverUrl = mapped.coverUrl || work.coverUrl || '';
+        const images = coverUrl ? [coverUrl] : [];
+        return {
+            ...mapped,
+            desc: work.desc || '',
+            cover: coverUrl,
+            images,
+            createdAt: work.createdAt ? (work.createdAt instanceof Date ? work.createdAt.toISOString() : String(work.createdAt)) : null,
+            updatedAt: work.updatedAt ? (work.updatedAt instanceof Date ? work.updatedAt.toISOString() : String(work.updatedAt)) : null,
+        };
     }
 };
 exports.WorksService = WorksService;

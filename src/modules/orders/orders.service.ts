@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma/prisma.service'
 import { CreatorsService } from '../creators/creators.service'
 import { CreateOrderDto } from './dto'
 import { randomBytes } from 'crypto'
+import { createUniqueOrderDisplayNo, createUniqueRefundDisplayNo } from '../../utils/display-no'
 
 @Injectable()
 export class OrdersService {
@@ -127,6 +128,32 @@ export class OrdersService {
     })
   }
 
+  private mapOrderShape(order: any) {
+    const refundNo = order?.refund?.displayNo || order?.refund?.refundNo || order?.refund?.no || order?.refund?.id || null
+    const requestNote = String(order?.refund?.requestNote || '').toLowerCase()
+    const refundType = requestNote === 'return_refund' ? 'RETURN_REFUND' : 'ONLY_REFUND'
+    const refund = order?.refund
+      ? {
+          ...order.refund,
+          displayNo: order.refund.displayNo || refundNo || null,
+          type: order.refund.type || refundType,
+          refundNo,
+          afterSaleNo: refundNo,
+          aftersaleNo: refundNo,
+        }
+      : order?.refund
+    return {
+      ...order,
+      displayNo: order?.displayNo || null,
+      orderDisplayNo: order?.displayNo || order?.orderNo || null,
+      refundDisplayNo: refundNo,
+      afterSaleDisplayNo: refundNo,
+      refund,
+      afterSaleNo: refundNo,
+      aftersaleNo: refundNo,
+    }
+  }
+
   // 创建订单：生成订单 + 生成订单项
   async create(userId: string, dto: CreateOrderDto) {
     const workId = dto.workId
@@ -157,6 +184,7 @@ export class OrdersService {
       }
     }
 
+    const displayNo = await createUniqueOrderDisplayNo(this.prisma)
     return this.prisma.$transaction(async (tx) => {
       // 查作品
       const work = await tx.work.findUnique({
@@ -186,6 +214,7 @@ export class OrdersService {
       // 创建订单 + 订单项
       const order = await tx.order.create({
         data: {
+          displayNo,
           orderNo,
           buyerId: userId,
           sellerId,
@@ -276,7 +305,7 @@ export class OrdersService {
     const items = await this.prisma.order.findMany({
       where: { buyerId: userId },
       orderBy: { createdAt: 'desc' },
-      include: { items: true },
+      include: { items: true, refund: true },
     })
     console.log('[listBuyer] found', items.length, 'orders')
 
@@ -296,7 +325,7 @@ export class OrdersService {
 
     return {
       items: items.map((order) => ({
-        ...order,
+        ...this.mapOrderShape(order),
         items: this.sanitizeItems(order.items),
         canPay: order.status === 'created',
         payable: order.status === 'created',
@@ -311,11 +340,11 @@ export class OrdersService {
     const items = await this.prisma.order.findMany({
       where: { OR: [{ buyerId: userId }, { sellerId: userId }] },
       orderBy: { createdAt: 'desc' },
-      include: { items: true },
+      include: { items: true, refund: true },
     })
     return {
       items: items.map((order) => ({
-        ...order,
+        ...this.mapOrderShape(order),
         items: this.sanitizeItems(order.items),
         canPay: order.status === 'created',
         payable: order.status === 'created',
@@ -341,7 +370,7 @@ export class OrdersService {
       items: items.map((order) => {
         const afterSaleSellerDecision = this.getAfterSaleSellerDecision(order.opLogs)
         return {
-          ...order,
+          ...this.mapOrderShape(order),
           items: this.sanitizeItems(order.items),
           canPay: order.status === 'created',
           payable: order.status === 'created',
@@ -356,7 +385,7 @@ export class OrdersService {
   async detail(userId: string, id: string) {
     const order = await this.prisma.order.findUnique({
       where: { id },
-      include: { items: true, refund: true, opLogs: { orderBy: { createdAt: 'desc' } } },
+      include: { items: true, refund: true, opLogs: { orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] } },
     })
     if (!order) throw new NotFoundException('订单不存在')
     if (order.buyerId !== userId && order.sellerId !== userId) {
@@ -365,7 +394,7 @@ export class OrdersService {
     const canPay = order.status === 'created'
     const afterSaleSellerDecision = this.getAfterSaleSellerDecision(order.opLogs)
     return {
-      ...order,
+      ...this.mapOrderShape(order),
       items: this.sanitizeItems(order.items),
       canPay,
       payable: canPay,
@@ -428,11 +457,26 @@ export class OrdersService {
     if (status && status !== 'all') {
       where.status = status
     }
-    if (q) {
-      where.OR = [
-        { orderNo: { contains: q } },
-        { buyerId: { contains: q } },
-      ]
+    const qTrim = String(q || '').trim()
+    if (qTrim) {
+      const isNumericDisplayNo = /^\d{10,}$/.test(qTrim)
+      if (isNumericDisplayNo) {
+        where.OR = [
+          { displayNo: qTrim },
+          { refund: { is: { displayNo: qTrim } } },
+          { buyer: { is: { displayNo: qTrim } } },
+          { orderNo: { contains: qTrim } },
+          { id: { contains: qTrim } },
+          { buyerId: { contains: qTrim } },
+        ]
+      } else {
+        where.OR = [
+          { orderNo: { contains: qTrim } },
+          { id: { contains: qTrim } },
+          { buyerId: { contains: qTrim } },
+          { displayNo: { contains: qTrim } },
+        ]
+      }
     }
 
     const [rows, total] = await Promise.all([
@@ -447,7 +491,7 @@ export class OrdersService {
     ])
 
     const items = rows.map((order) => ({
-      ...order,
+      ...this.mapOrderShape(order),
       afterSaleSellerDecision: this.getAfterSaleSellerDecision(order.opLogs),
     }))
 
@@ -461,14 +505,14 @@ export class OrdersService {
       include: { 
         items: true, 
         refund: true, 
-        opLogs: { orderBy: { createdAt: 'desc' } },
-        buyer: { select: { id: true, nickname: true, openId: true } },
-        seller: { select: { id: true, nickname: true, openId: true } },
+        opLogs: { orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] },
+        buyer: { select: { id: true, displayNo: true, nickname: true, openId: true } },
+        seller: { select: { id: true, displayNo: true, nickname: true, openId: true } },
       },
     })
     if (!order) throw new NotFoundException('订单不存在')
     return {
-      ...order,
+      ...this.mapOrderShape(order),
       afterSaleSellerDecision: this.getAfterSaleSellerDecision(order.opLogs),
     }
   }
@@ -553,6 +597,7 @@ export class OrdersService {
       throw new BadRequestException('已存在退款申请')
     }
 
+    const forcedRefundType = order.shippedAt ? 'return_refund' : 'refund'
     await this.prisma.$transaction([
       this.prisma.order.update({
         where: { id: orderId },
@@ -560,14 +605,15 @@ export class OrdersService {
       }),
       this.prisma.orderRefund.create({
         data: {
+          displayNo: await createUniqueRefundDisplayNo(this.prisma),
           orderId,
           status: 'requested',
           reason: data.reason || null,
-          requestNote: data.note || null,
+          requestNote: forcedRefundType,
         },
       }),
     ])
-    await this.writeOpLog(orderId, 'refund_request', data, adminId)
+    await this.writeOpLog(orderId, 'refund_request', { ...data, type: forcedRefundType }, adminId)
     return this.adminDetail(orderId)
   }
 
@@ -716,15 +762,8 @@ export class OrdersService {
       throw new BadRequestException('已提交申请，如需修改请使用 modify')
     }
 
-    // 确定 refundType：优先信任参数，否则沿用既有申请的 requestNote
-    const refundType = (type || (existingRefund?.requestNote as any) || 'refund') as 'refund' | 'return_refund'
-
-    // 校验 refundType 与订单发货事实是否一致（不依赖当前 order.status）
-    if (refundType === 'return_refund') {
-      if (!order.shippedAt) throw new BadRequestException('未发货订单不可申请退货退款')
-    } else {
-      if (order.shippedAt) throw new BadRequestException('已发货订单仅可申请退货退款')
-    }
+    // 售后类型仅由后端按履约状态决定，忽略前端传入 type
+    const refundType = (order.shippedAt ? 'return_refund' : 'refund') as 'refund' | 'return_refund'
 
     // 修改申请：仅 refund_requested + requested 可修改（不计入申请次数）
     if (opAction === 'modify') {
@@ -775,6 +814,7 @@ export class OrdersService {
     } else {
       await this.prisma.orderRefund.create({
         data: {
+          displayNo: await createUniqueRefundDisplayNo(this.prisma),
           orderId,
           status: 'requested',
           reason: reason || null,

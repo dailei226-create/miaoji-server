@@ -100,15 +100,84 @@ export class PayController {
         amount: payResult?.amount,
       });
 
-      // 最小闭环：支付成功后更新订单状态为 paid
-      if (payResult?.out_trade_no) {
-        const data: any = { status: 'paid', paidAt: new Date() };
-        if (payResult?.transaction_id) {
-          data.transactionId = String(payResult.transaction_id);
-        }
-        await this.prisma.order.updateMany({
-          where: { orderNo: String(payResult.out_trade_no) },
-          data,
+      // ===== 成功态校验 + 幂等 + 金额一致性校验 =====
+      const outTradeNo = payResult?.out_trade_no ? String(payResult.out_trade_no) : '';
+      const tradeState = payResult?.trade_state ? String(payResult.trade_state) : '';
+      const wxAmountTotal = payResult?.amount?.total;
+
+      if (!outTradeNo) {
+        console.error('[pay/notify] missing out_trade_no');
+        return res.status(200).json({ code: 'SUCCESS', message: '成功' });
+      }
+
+      // 1) 必须 SUCCESS 才更新订单；否则仅记录日志
+      if (tradeState !== 'SUCCESS') {
+        console.log('[pay/notify] trade_state not SUCCESS, skip update:', { outTradeNo, tradeState });
+        return res.status(200).json({ code: 'SUCCESS', message: '成功' });
+      }
+
+      // 查询订单（以 orderNo 绑定）
+      const order = await this.prisma.order.findFirst({ where: { orderNo: outTradeNo } });
+      if (!order) {
+        console.error('[pay/notify] order not found for out_trade_no:', outTradeNo);
+        return res.status(200).json({ code: 'SUCCESS', message: '成功' });
+      }
+
+      // 2) 幂等：已处于支付成功后的任意状态，视为已处理过 SUCCESS
+      const alreadyHandledStatuses = new Set([
+        'paid',
+        'paid_mock',
+        'shipped',
+        'received',
+        'completed',
+        'refund_requested',
+        'refund_approved',
+        'refund_rejected',
+        'refunded',
+      ]);
+      if (alreadyHandledStatuses.has(String(order.status))) {
+        console.log('[pay/notify] already handled, skip update:', {
+          orderId: order.id,
+          orderNo: order.orderNo,
+          status: order.status,
+        });
+        return res.status(200).json({ code: 'SUCCESS', message: '成功' });
+      }
+
+      // 3) 金额一致性校验：用 DB 金额对比微信回调金额（单位：分）
+      const wxTotalFen = Number(wxAmountTotal);
+      const dbTotalFen = Number(order.amount);
+      if (!Number.isFinite(wxTotalFen) || wxTotalFen <= 0) {
+        console.error('[pay/notify] invalid wx amount.total, skip update:', { outTradeNo, wxAmountTotal });
+        return res.status(200).json({ code: 'SUCCESS', message: '成功' });
+      }
+      if (!Number.isFinite(dbTotalFen) || dbTotalFen <= 0) {
+        console.error('[pay/notify] invalid db order.amount, skip update:', { orderId: order.id, dbTotalFen });
+        return res.status(200).json({ code: 'SUCCESS', message: '成功' });
+      }
+      if (wxTotalFen !== dbTotalFen) {
+        console.error('[pay/notify] amount mismatch, skip update:', {
+          orderId: order.id,
+          orderNo: order.orderNo,
+          dbTotalFen,
+          wxTotalFen,
+          transaction_id: payResult?.transaction_id,
+        });
+        return res.status(200).json({ code: 'SUCCESS', message: '成功' });
+      }
+
+      // 条件更新：仅 created -> paid，避免重复写 paidAt / transactionId
+      const data: any = { status: 'paid', paidAt: new Date() };
+      if (payResult?.transaction_id) data.transactionId = String(payResult.transaction_id);
+      const upd = await this.prisma.order.updateMany({
+        where: { id: order.id, status: 'created' },
+        data,
+      });
+      if (upd.count !== 1) {
+        console.log('[pay/notify] updateMany count!=1 (probably concurrent), skip:', {
+          orderId: order.id,
+          status: order.status,
+          count: upd.count,
         });
       }
 

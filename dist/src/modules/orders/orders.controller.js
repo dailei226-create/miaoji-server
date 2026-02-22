@@ -68,7 +68,15 @@ let OrdersController = class OrdersController {
     }
     async requestRefund(req, id, body) {
         const userId = req.user?.sub;
-        return this.orders.requestRefund(userId, id, body.reason, body.type);
+        return this.orders.requestRefund(userId, id, body.reason, body.type, body.action);
+    }
+    async cancelRefund(req, id) {
+        const userId = req.user?.sub;
+        return this.orders.cancelRefund(userId, id);
+    }
+    async afterSaleDecision(req, id, body) {
+        const userId = req.user?.sub;
+        return this.orders.afterSaleSellerDecision(userId, id, body);
     }
     async mySellerOrders(req, status) {
         const userId = req.user?.sub;
@@ -166,6 +174,23 @@ __decorate([
     __metadata("design:paramtypes", [Object, String, Object]),
     __metadata("design:returntype", Promise)
 ], OrdersController.prototype, "requestRefund", null);
+__decorate([
+    (0, common_1.Post)(':id/cancel-refund'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String]),
+    __metadata("design:returntype", Promise)
+], OrdersController.prototype, "cancelRefund", null);
+__decorate([
+    (0, common_1.Post)(':id/after-sale/decision'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id')),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String, Object]),
+    __metadata("design:returntype", Promise)
+], OrdersController.prototype, "afterSaleDecision", null);
 __decorate([
     (0, common_1.Get)('seller'),
     __param(0, (0, common_1.Req)()),

@@ -25,6 +25,9 @@ let AuthController = class AuthController {
     constructor(auth) {
         this.auth = auth;
     }
+    async login(dto) {
+        return this.auth.login({ code: dto.code, nickname: dto.nickname });
+    }
     async mockLogin(dto) {
         if (!isDev) {
             throw new common_1.ForbiddenException('mock-login is only available in development environment');
@@ -43,6 +46,13 @@ let AuthController = class AuthController {
     }
 };
 exports.AuthController = AuthController;
+__decorate([
+    (0, common_1.Post)('login'),
+    __param(0, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [dto_1.LoginDto]),
+    __metadata("design:returntype", Promise)
+], AuthController.prototype, "login", null);
 __decorate([
     (0, common_1.Post)('mock-login'),
     __param(0, (0, common_1.Body)()),

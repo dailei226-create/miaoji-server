@@ -34,11 +34,17 @@ enum WorkStatus {
 
 model User {
   id        String   @id @default(cuid())
+  displayNo String?  @unique @db.VarChar(32)
   openId    String   @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   nickname  String?
   bio       String?  @db.Text
+  creatorAgreementAcceptedAt DateTime?
+  creatorAgreementVersion    String?
+  creatorAgreementIp         String?
+  creatorAgreementUserAgent  String?
+  creatorAgreementSnapshot   String?  @db.Text
 
   // orders
   buyerOrders  Order[] @relation("BuyerOrders")
@@ -97,6 +103,7 @@ model Notice {
 
 model Order {
   id              String      @id @default(cuid())
+  displayNo       String?     @unique @db.VarChar(32)
   orderNo         String      @unique
   buyerId         String
   sellerId        String
@@ -146,6 +153,7 @@ model OrderOpLog {
 // 订单退款信息
 model OrderRefund {
   id           String    @id @default(cuid())
+  displayNo    String?   @unique @db.VarChar(32)
   orderId      String    @unique
   status       String    // requested, approved, rejected, refunded
   reason       String?   @db.Text
@@ -265,19 +273,26 @@ enum BannerTargetType {
 }
 
 model Banner {
-  id         Int              @id @default(autoincrement())
-  title      String?
-  imageUrl   String
+  // NOTE: Production DB was created by early migration with VARCHAR id.
+  // Keep prisma schema aligned to DB to avoid "save failed" (no auto-migrate here).
+  id         String   @id @default(cuid())
+  title      String?  @db.VarChar(255)
+  imageUrl   String   @db.VarChar(512)
+  linkUrl    String?  @db.VarChar(512)
 
-  position   BannerPosition
-  sortOrder  Int              @default(0)
-  enabled    Boolean          @default(true)
+  // Use VARCHAR(32) in DB; DTO restricts values to HOME/ACTIVITY.
+  position   String   @default("HOME") @db.VarChar(32)
+  sortOrder  Int      @default(0)
+  // Legacy field from initial migration; kept for backward compatibility.
+  sort       Int      @default(0)
+  enabled    Boolean  @default(true)
 
-  targetType BannerTargetType
-  targetId   Int?
+  // Use VARCHAR(32) in DB; DTO restricts values to known targetType strings.
+  targetType String   @default("TOPIC_NEW") @db.VarChar(32)
+  targetId   String?  @db.VarChar(191)
 
-  createdAt  DateTime         @default(now())
-  updatedAt  DateTime         @updatedAt
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   @@index([position, enabled, sortOrder])
 }

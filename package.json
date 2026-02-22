@@ -13,7 +13,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
     "seed": "ts-node -r tsconfig-paths/register prisma/seed.ts",
-    "smoke": "node scripts/smoke.js"
+    "smoke": "node scripts/smoke.js",
+    "backfill:displayNo": "ts-node scripts/backfill-display-no.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",
