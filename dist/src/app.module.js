@@ -25,6 +25,7 @@ const creators_module_1 = require("./modules/creators/creators.module");
 const upload_module_1 = require("./modules/upload/upload.module");
 const support_module_1 = require("./modules/support/support.module");
 const creator_agreement_module_1 = require("./modules/creator-agreement/creator-agreement.module");
+const sms_module_1 = require("./modules/sms/sms.module");
 const health_controller_1 = require("./health.controller");
 const time_controller_1 = require("./time.controller");
 let AppModule = class AppModule {
@@ -50,6 +51,7 @@ exports.AppModule = AppModule = __decorate([
             config_module_1.ConfigModule,
             support_module_1.SupportModule,
             creator_agreement_module_1.CreatorAgreementModule,
+            sms_module_1.SmsModule,
         ],
         controllers: [health_controller_1.HealthController, time_controller_1.TimeController],
     })

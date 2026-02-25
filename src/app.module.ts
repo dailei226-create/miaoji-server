@@ -16,6 +16,7 @@ import { CreatorsModule } from './modules/creators/creators.module';
 import { UploadModule } from './modules/upload/upload.module';
 import { SupportModule } from './modules/support/support.module';
 import { CreatorAgreementModule } from './modules/creator-agreement/creator-agreement.module';
+import { SmsModule } from './modules/sms/sms.module';
 import { HealthController } from './health.controller';
 import { TimeController } from './time.controller';
 
@@ -38,6 +39,7 @@ import { TimeController } from './time.controller';
     ConfigModule,
     SupportModule,
     CreatorAgreementModule,
+    SmsModule,
   ],
   controllers: [HealthController, TimeController],
 })
