@@ -44,6 +44,11 @@ export class CreatorAgreementService {
     };
   }
 
+  private truncateUserAgent(ua: string | null | undefined, maxLen = 500): string | null {
+    if (ua == null || ua === '') return null;
+    return ua.length <= maxLen ? ua : ua.slice(0, maxLen);
+  }
+
   async accept(userId: string, ip: string, userAgent: string) {
     const creatorStatus = await this.getCreatorStatus(userId);
     if (creatorStatus !== 'approved') {
@@ -56,7 +61,7 @@ export class CreatorAgreementService {
         creatorAgreementAcceptedAt: new Date(),
         creatorAgreementVersion: CREATOR_AGREEMENT_VERSION,
         creatorAgreementIp: ip || null,
-        creatorAgreementUserAgent: userAgent || null,
+        creatorAgreementUserAgent: this.truncateUserAgent(userAgent),
         creatorAgreementSnapshot: CREATOR_AGREEMENT_TEXT,
       },
     });
